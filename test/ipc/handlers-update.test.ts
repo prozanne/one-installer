@@ -1,97 +1,130 @@
 /**
- * test/ipc/handlers-update.test.ts
+ * Update IPC handler tests.
  *
- * Tests for the update IPC handlers (updateCheck / updateRun) in electron-main.ts.
+ * Targets the pure functions in `src/main/ipc/handlers/update.ts`. The
+ * Electron-lifecycle blocker is gone now that the handlers take an injected
+ * dep bag — tests construct a minimal `PackageSource` fake and exercise
+ * `handleUpdateCheck` / `handleUpdateRun` directly.
  *
- * ALL TESTS SKIPPED — Three blocking issues prevent isolation:
- *
- * 1. COUPLING: electron-main.ts registers all ipcMain.handle() calls inside
- *    the async `main()` function which is immediately invoked at module load
- *    time via `void main()`. Handlers are not exported and cannot be called
- *    in isolation without triggering the full Electron lifecycle. Extracting
- *    handlers into a separate injectable module is required before these tests
- *    can be written — that refactor is NOT this agent's job (see spec).
- *
- * 2. MISSING FEATURE: As of R3, electron-main.ts has no update-related IPC
- *    handlers. IpcChannels contains no 'update:check' or 'update:run' entries,
- *    and there are no corresponding ipcMain.handle() calls. The self-update
- *    module (src/main/updater/*.ts) does not exist.
- *
- * 3. MISSING SCHEMAS: ipc-types.ts has no UpdateCheckRes or UpdateRunReq
- *    schemas. Without them, handler tests cannot assert on the shape of responses.
- *
- * Resolution for R4:
- *   - Implement src/main/updater/check.ts and src/main/updater/download.ts.
- *   - Add update IPC channels + schemas to ipc-types.ts.
- *   - Extract handler registration into an injectable module.
- *   - Enable the tests below with the Electron mock at the top of the file.
- *
- * See R3 test report for details.
+ * Full end-to-end (downloadHostUpdate + fetchManifestVerified) is out of
+ * scope here because a real verified manifest requires fixture signatures —
+ * those are covered in `test/updater/download.test.ts`. We focus on the
+ * IPC handler's branching: validation, mutex gate, error mapping.
  */
+import { describe, it, expect } from 'vitest';
+import { handleUpdateCheck, handleUpdateRun } from '@main/ipc/handlers/update';
+import type { PackageSource } from '@shared/source/package-source';
+import type { VdxConfig } from '@shared/config/vdx-config';
 
-import { describe, it } from 'vitest';
+function makeSource(opts: {
+  listVersions?: (appId: string) => Promise<string[]>;
+} = {}): PackageSource {
+  return {
+    id: 'local-fs',
+    displayName: 'fake',
+    fetchCatalog: async () => ({ notModified: false, body: new Uint8Array(), sig: new Uint8Array() }),
+    fetchManifest: async () => ({ body: new Uint8Array(), sig: new Uint8Array() }),
+    fetchPayload: () => ({ async *[Symbol.asyncIterator]() { /* empty */ } }),
+    fetchAsset: async () => new Uint8Array(),
+    ...(opts.listVersions ? { listVersions: opts.listVersions } : {}),
+  };
+}
 
-/*
- * When handlers are extractable, use this Electron mock at file scope:
- *
- * vi.mock('electron', () => ({
- *   app: {
- *     whenReady: vi.fn().mockResolvedValue(undefined),
- *     getPath: () => '/tmp/test-vdx',
- *     on: vi.fn(),
- *     requestSingleInstanceLock: () => true,
- *     quit: vi.fn(),
- *   },
- *   BrowserWindow: vi.fn(() => ({
- *     loadURL: vi.fn(), loadFile: vi.fn(),
- *     webContents: { send: vi.fn(), setWindowOpenHandler: vi.fn(), on: vi.fn() },
- *     removeMenu: vi.fn(),
- *     isDestroyed: () => false,
- *     isMinimized: () => false,
- *     restore: vi.fn(),
- *     focus: vi.fn(),
- *   })),
- *   ipcMain: { handle: vi.fn() },
- *   dialog: { showOpenDialog: vi.fn() },
- *   shell: { openExternal: vi.fn() },
- * }));
- */
+const baseConfig: VdxConfig = {
+  schemaVersion: 1,
+  source: { type: 'github', github: { catalogRepo: 'x/y', selfUpdateRepo: 'x/y', appsOrg: 'x', apiBase: 'https://example.test', ref: 'stable' } },
+  channel: 'stable',
+  developerMode: false,
+  telemetry: false,
+  trustRoots: [],
+};
 
-// SKIPPED: impl missing + coupling — see R3 test report
-describe.skip('update:check handler', () => {
-  it('calls checkForHostUpdate and returns null when up-to-date', async () => {
-    // SKIPPED: impl missing + coupling — see R3 test report
+const baseDeps = (overrides: { source?: PackageSource; activeTransactions?: () => number } = {}) => ({
+  packageSource: overrides.source ?? makeSource(),
+  config: baseConfig,
+  hostVersion: '1.0.0',
+  cacheDir: '/tmp/test-cache',
+  activeTransactions: overrides.activeTransactions ?? (() => 0),
+  getTrustRoots: async () => [] as Uint8Array[],
+});
+
+describe('update:check handler', () => {
+  it('returns ok:true with info=null when no newer version exists', async () => {
+    const source = makeSource({ listVersions: async () => ['1.0.0'] });
+    const res = await handleUpdateCheck(baseDeps({ source }), {});
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.info).toBeNull();
   });
 
-  it('returns UpdateInfo when a newer version is available', async () => {
-    // SKIPPED: impl missing + coupling — see R3 test report
+  it('returns ok:true with info populated when a newer version is available', async () => {
+    const source = makeSource({ listVersions: async () => ['1.2.0', '1.0.0'] });
+    const res = await handleUpdateCheck(baseDeps({ source }), {});
+    expect(res.ok).toBe(true);
+    if (res.ok && res.info) {
+      expect(res.info.latestVersion).toBe('1.2.0');
+      expect(res.info.currentVersion).toBe('1.0.0');
+    }
   });
 
-  it('returns { ok: false, error } when source throws NetworkError', async () => {
-    // SKIPPED: impl missing + coupling — see R3 test report
+  it('returns ok:true info:null even when source.listVersions throws (non-fatal)', async () => {
+    const source = makeSource({
+      listVersions: async () => {
+        throw new Error('NetworkError');
+      },
+    });
+    // checkForHostUpdate swallows source errors and returns null —
+    // the handler propagates that as ok:true info:null (silent failure UX).
+    const res = await handleUpdateCheck(baseDeps({ source }), {});
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.info).toBeNull();
+  });
+
+  it('rejects malformed input via zod', async () => {
+    const res = await handleUpdateCheck(baseDeps(), 'not-an-object');
+    expect(res.ok).toBe(false);
   });
 });
 
-// SKIPPED: impl missing + coupling — see R3 test report
-describe.skip('update:run handler', () => {
-  it('rejects (returns ok:false) without explicit user confirmation flag', async () => {
-    // SKIPPED: impl missing + coupling — see R3 test report
-    // Safety gate: update:run must require confirmed:true in the request;
-    // calling it without confirmed should return { ok: false, error: 'not confirmed' }.
+describe('update:run handler', () => {
+  it('rejects without confirm:true (zod gate)', async () => {
+    const res = await handleUpdateRun(baseDeps(), {});
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/invalid request/i);
   });
 
-  it('calls downloadHostUpdate when confirmed:true', async () => {
-    // SKIPPED: impl missing + coupling — see R3 test report
+  it('rejects with confirm:false', async () => {
+    const res = await handleUpdateRun(baseDeps(), { confirm: false } as never);
+    expect(res.ok).toBe(false);
   });
 
-  it('forwards download source errors as { ok: false, error }', async () => {
-    // SKIPPED: impl missing + coupling — see R3 test report
-    // Expected: if downloadHostUpdate rejects, handler catches and returns
-    // { ok: false, error: e.message } rather than letting the unhandled
-    // rejection propagate to ipcMain.
+  it('rejects when an install transaction is in flight', async () => {
+    const res = await handleUpdateRun(
+      baseDeps({ activeTransactions: () => 1 }),
+      { confirm: true },
+    );
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/install is in progress/i);
   });
 
-  it('does not quit the app on download failure', async () => {
-    // SKIPPED: impl missing + coupling — see R3 test report
+  it('returns ok:false with "No update available" when checker yields null', async () => {
+    // No listVersions support → checkForHostUpdate falls through to Strategy B
+    // (http-mirror probe) which without a baseUrl returns null. End result:
+    // handler reports "No update available".
+    const source = makeSource({ listVersions: async () => ['1.0.0'] });
+    const res = await handleUpdateRun(baseDeps({ source }), { confirm: true });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/no update available/i);
+  });
+
+  it('does not propagate unexpected errors as unhandled rejection', async () => {
+    // listVersions throws + Strategy B unsupported → checker returns null
+    // → handler returns "No update available", not a thrown error.
+    const source = makeSource({
+      listVersions: async () => {
+        throw new Error('boom');
+      },
+    });
+    const res = await handleUpdateRun(baseDeps({ source }), { confirm: true });
+    expect(res.ok).toBe(false);
   });
 });

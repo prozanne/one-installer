@@ -92,6 +92,14 @@ export interface HttpMirrorConfig {
 
   /**
    * Optional proxy override for this source only.
+   *
+   * NOT YET IMPLEMENTED. The field is accepted for forward-compat with R3
+   * config files, but the underlying node:http/node:https requests do not
+   * route through it. A `proxyUrl` value is detected at construction time
+   * and surfaced via `console.warn` so operators see the misconfiguration
+   * immediately rather than silently bypassing their proxy. Threading this
+   * through requires either an `https-proxy-agent` dep or hand-rolled
+   * CONNECT support; tracked for R3.
    */
   proxyUrl?: string;
 }
@@ -268,6 +276,15 @@ export class HttpMirrorSource implements PackageSource {
     this.token = config.token;
     this.tokenPresent = config.token !== undefined && config.token.length > 0;
     this.displayName = `HTTP mirror (${this.baseUrl})`;
+    if (config.proxyUrl) {
+      // The field is accepted but does not influence request routing yet.
+      // An operator who set this expects their corporate proxy to be used;
+      // surfacing the gap loudly is cheaper than letting requests sneak past.
+      console.warn(
+        '[HttpMirrorSource] config.proxyUrl is set but proxy support is not yet implemented; ' +
+          'requests will route directly. Tracked for R3.',
+      );
+    }
   }
 
   private get authHeaders(): Record<string, string> {

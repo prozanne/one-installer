@@ -28,6 +28,8 @@ import {
   fetchPayloadStream,
 } from './catalog';
 import { checkForHostUpdate, downloadHostUpdate, SELF_UPDATE_APP_ID } from './updater';
+import { handleSettingsGet, handleSettingsSet } from './ipc/handlers/settings';
+import { handleUpdateCheck, handleUpdateRun } from './ipc/handlers/update';
 import {
   IpcChannels,
   SideloadOpenReq,
@@ -839,29 +841,9 @@ async function main(): Promise<void> {
   // settings:get / settings:set
   // -----------------------------------------------------------------------
 
-  ipcMain.handle(IpcChannels.settingsGet, async (_e, raw): Promise<SettingsGetResT> => {
-    const parsed = SettingsGetReq.safeParse(raw ?? {});
-    if (!parsed.success) return { ok: false, error: 'invalid request' };
-    try {
-      const state = await installedStore.read();
-      return { ok: true, settings: state.settings };
-    } catch (e) {
-      return { ok: false, error: (e as Error).message };
-    }
-  });
-
-  ipcMain.handle(IpcChannels.settingsSet, async (_e, raw): Promise<SettingsSetResT> => {
-    const parsed = SettingsSetReq.safeParse(raw);
-    if (!parsed.success) return { ok: false, error: 'invalid request' };
-    try {
-      const updated = await installedStore.update((s) => {
-        Object.assign(s.settings, parsed.data.patch);
-      });
-      return { ok: true, settings: updated.settings };
-    } catch (e) {
-      return { ok: false, error: (e as Error).message };
-    }
-  });
+  const settingsDeps = { installedStore };
+  ipcMain.handle(IpcChannels.settingsGet, (_e, raw) => handleSettingsGet(settingsDeps, raw));
+  ipcMain.handle(IpcChannels.settingsSet, (_e, raw) => handleSettingsSet(settingsDeps, raw));
 
   // -----------------------------------------------------------------------
   // diag:export — bundle logs to a ZIP archive using yazl
@@ -922,85 +904,16 @@ async function main(): Promise<void> {
   // update:check — query PackageSource for a newer host version
   // -----------------------------------------------------------------------
 
-  ipcMain.handle(IpcChannels.updateCheck, async (_e, raw): Promise<UpdateCheckResT> => {
-    const parsed = UpdateCheckReq.safeParse(raw ?? {});
-    if (!parsed.success) return { ok: false, error: 'invalid request' };
-    try {
-      const selfUpdateConfig =
-        config.source.type === 'github' && config.source.github
-          ? { repo: config.source.github.selfUpdateRepo }
-          : null;
-      const info = await checkForHostUpdate({
-        source: packageSource,
-        selfUpdateConfig,
-        currentVersion: HOST_VERSION,
-        channel: config.channel,
-      });
-      return { ok: true, info };
-    } catch (e) {
-      return { ok: false, error: (e as Error).message };
-    }
-  });
-
-  // -----------------------------------------------------------------------
-  // update:run — download the update and log a TODO for Phase 1.2 restart
-  // -----------------------------------------------------------------------
-
-  ipcMain.handle(IpcChannels.updateRun, async (_e, raw): Promise<UpdateRunResT> => {
-    const parsed = UpdateRunReq.safeParse(raw);
-    if (!parsed.success) return { ok: false, error: 'invalid request' };
-    if (activeTransactions > 0) {
-      return {
-        ok: false,
-        error: 'An install is in progress. Complete or cancel it before restarting.',
-      };
-    }
-    try {
-      const selfUpdateConfig =
-        config.source.type === 'github' && config.source.github
-          ? { repo: config.source.github.selfUpdateRepo }
-          : null;
-      const info = await checkForHostUpdate({
-        source: packageSource,
-        selfUpdateConfig,
-        currentVersion: HOST_VERSION,
-        channel: config.channel,
-      });
-      if (!info) return { ok: false, error: 'No update available' };
-
-      // Refetch the host-installer manifest through the verified path so
-      // the SHA-256 we hand to downloadHostUpdate is signed by a trust root —
-      // never user-supplied, never blank. Without this, an attacker who can
-      // tamper with the payload bytes (e.g. a corporate MITM proxy) wins.
-      let updateManifest: Manifest;
-      try {
-        updateManifest = await fetchManifestVerified(
-          packageSource,
-          SELF_UPDATE_APP_ID,
-          info.latestVersion,
-          { trustRoots: await getTrustRoots() },
-        );
-      } catch (e) {
-        return { ok: false, error: `Update manifest verify failed: ${(e as Error).message}` };
-      }
-
-      const destPath = join(paths.cacheDir, `vdx-installer-${info.latestVersion}.staged`);
-      await downloadHostUpdate(info, {
-        source: packageSource,
-        destPath,
-        expectedSha256: updateManifest.payload.sha256,
-      });
-
-      // TODO (Phase 1.2): Authenticode verification + replace-on-restart:
-      //   app.relaunch({ execPath: destPath });
-      //   app.quit();
-      console.info('[vdx] update:run: Phase 1.1 — download complete. Phase 1.2 replace-on-restart not yet implemented.');
-
-      return { ok: true };
-    } catch (e) {
-      return { ok: false, error: (e as Error).message };
-    }
-  });
+  const updateDeps = {
+    packageSource,
+    config,
+    hostVersion: HOST_VERSION,
+    cacheDir: paths.cacheDir,
+    activeTransactions: () => activeTransactions,
+    getTrustRoots,
+  };
+  ipcMain.handle(IpcChannels.updateCheck, (_e, raw) => handleUpdateCheck(updateDeps, raw));
+  ipcMain.handle(IpcChannels.updateRun, (_e, raw) => handleUpdateRun(updateDeps, raw));
 
   // -----------------------------------------------------------------------
   // auth:setToken / auth:clearToken — first-run PAT flow.
