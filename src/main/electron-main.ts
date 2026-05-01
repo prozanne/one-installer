@@ -31,6 +31,7 @@ import { handleSettingsGet, handleSettingsSet } from './ipc/handlers/settings';
 import { handleUpdateCheck, handleUpdateRun } from './ipc/handlers/update';
 import { handleDiagExport, handleDiagOpenLogs } from './ipc/handlers/diag';
 import { handleAuthSetToken, handleAuthClearToken } from './ipc/handlers/auth';
+import { handleAppsList } from './ipc/handlers/apps';
 import { createPickerAllowlist } from './ipc/picker-allowlist';
 import { computeCsp } from './ipc/csp';
 import { ipcError, ipcErrorMessage } from './ipc/error';
@@ -44,7 +45,6 @@ import {
   type SideloadOpenResT,
   type InstallRunResT,
   type UninstallRunResT,
-  type AppsListResT,
   type ProgressEventT,
   type CatalogFetchResT,
   type CatalogInstallResT,
@@ -395,10 +395,7 @@ async function main(): Promise<void> {
   // IPC handlers
   // -----------------------------------------------------------------------
 
-  ipcMain.handle(IpcChannels.appsList, async (): Promise<AppsListResT> => {
-    const state = await installedStore.read();
-    return state.apps;
-  });
+  ipcMain.handle(IpcChannels.appsList, () => handleAppsList({ installedStore }));
 
   ipcMain.handle(IpcChannels.pickVdxpkg, async () => {
     if (!mainWindow) return { canceled: true };

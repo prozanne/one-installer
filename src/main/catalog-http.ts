@@ -1,3 +1,24 @@
+/**
+ * Direct HTTP catalog fetch — NOT the same path as `src/main/catalog/`.
+ *
+ * The R2 `PackageSource` abstraction (in `src/main/catalog/catalog-fetcher.ts`)
+ * fronts the *app* catalog: GitHub Releases API, HTTP mirror, local-fs. Each
+ * backend has a uniform `fetchCatalog`/`fetchManifest`/`fetchPayload` surface.
+ *
+ * The *agent* catalog has a different deployment shape: static `catalog.json` +
+ * `catalog.json.sig` on GitHub Pages, no Releases API, no per-app manifest
+ * fetch (the catalog entries embed `packageUrl` directly). Forcing it into
+ * `PackageSource` would either constrain agent operators to publish through
+ * the apps-style layout (bad) or add a no-op stub for unused interface
+ * methods (worse).
+ *
+ * So the two paths coexist by design:
+ *   - `src/main/catalog/*`        — apps via PackageSource (catalog→manifest→payload)
+ *   - `src/main/catalog-http.ts`  — agents via direct GitHub Pages fetch (catalog only)
+ *
+ * Both verify Ed25519 sigs against the same trust roots and both feed into
+ * the unified `catalogCacheEntries` map. Keep them parallel; don't merge.
+ */
 import { CatalogSchema, type CatalogT } from '@shared/schema';
 import { verifySignature } from '@main/packages/signature';
 import { ok, err, type Result } from '@shared/types';
