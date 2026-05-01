@@ -1,0 +1,9 @@
+node_modules/
+dist/
+coverage/
+*.log
+.DS_Store
+.vscode/
+test/fixtures/keys/dev-priv.bin
+test/fixtures/keys/dev-pub.bin
+*.tsbuildinfo

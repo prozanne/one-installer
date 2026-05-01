@@ -1,0 +1,42 @@
+import { z } from 'zod';
+import { JournalEntry } from './journal';
+import { ManifestSchema } from './manifest';
+
+const Settings = z.object({
+  language: z.string(),
+  updateChannel: z.enum(['stable', 'beta', 'internal']),
+  autoUpdateHost: z.enum(['auto', 'ask', 'manual']),
+  autoUpdateApps: z.enum(['auto', 'ask', 'manual']),
+  cacheLimitGb: z.number().int().positive(),
+  proxy: z
+    .object({ host: z.string(), port: z.number().int(), auth: z.string().nullable() })
+    .nullable(),
+  telemetry: z.boolean(),
+  trayMode: z.boolean(),
+  developerMode: z.boolean(),
+});
+
+const InstalledApp = z.object({
+  version: z.string(),
+  installScope: z.enum(['user', 'machine']),
+  installPath: z.string(),
+  wizardAnswers: z.record(z.string(), z.unknown()),
+  journal: z.array(JournalEntry),
+  manifestSnapshot: ManifestSchema,
+  installedAt: z.string().datetime(),
+  updateChannel: z.enum(['stable', 'beta', 'internal']),
+  autoUpdate: z.enum(['auto', 'ask', 'manual']),
+  source: z.enum(['catalog', 'sideload']).default('catalog'),
+});
+
+export const InstalledStateSchema = z.object({
+  schema: z.literal(1),
+  host: z.object({ version: z.string() }),
+  lastCatalogSync: z.string().datetime().nullable(),
+  settings: Settings,
+  apps: z.record(z.string(), InstalledApp),
+});
+
+export type InstalledStateT = z.infer<typeof InstalledStateSchema>;
+export type InstalledAppT = z.infer<typeof InstalledApp>;
+export type SettingsT = z.infer<typeof Settings>;

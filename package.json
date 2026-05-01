@@ -1,0 +1,39 @@
+{
+  "name": "vdx-installer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Samsung VDX Installer — Electron one-installer for VDX apps",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint . --ext .ts,.tsx",
+    "format": "prettier --write \"src/**/*.{ts,tsx,json}\" \"test/**/*.{ts,tsx,json}\"",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "gen:dev-keys": "tsx scripts/generate-dev-keys.ts"
+  },
+  "devDependencies": {
+    "@types/minimatch": "^5.1.2",
+    "@types/node": "^20.12.0",
+    "@types/yauzl": "^2.10.3",
+    "@types/yazl": "^2.4.5",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "@vitest/coverage-v8": "^1.5.0",
+    "eslint": "^8.57.0",
+    "memfs": "^4.9.0",
+    "prettier": "^3.2.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0",
+    "vitest": "^1.5.0"
+  },
+  "dependencies": {
+    "@noble/ed25519": "^2.1.0",
+    "minimatch": "^9.0.4",
+    "yauzl": "^3.1.3",
+    "yazl": "^2.5.1",
+    "zod": "^3.23.0"
+  }
+}
