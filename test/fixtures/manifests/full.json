@@ -1,0 +1,150 @@
+{
+  "schemaVersion": 1,
+  "id": "com.samsung.vdx.full-fixture",
+  "name": {
+    "ko": "전체 기능 테스트 앱",
+    "en": "Full Feature Fixture App",
+    "default": "Full Feature Fixture App"
+  },
+  "version": "2.3.1",
+  "publisher": "Samsung Electronics",
+  "description": {
+    "ko": "모든 매니페스트 기능을 테스트하기 위한 합성 픽스처입니다.",
+    "en": "A synthetic fixture that exercises every manifest feature. Not a real product.",
+    "default": "A synthetic fixture that exercises every manifest feature. Not a real product."
+  },
+  "icon": "icon.png",
+  "screenshots": ["screenshots/01.png", "screenshots/02.png"],
+  "homepage": "https://samsung.com/vdx/full-fixture",
+  "supportUrl": "https://samsung.com/vdx/support",
+  "license": {
+    "type": "EULA",
+    "file": "EULA.txt",
+    "required": true
+  },
+  "size": { "download": 41200000, "installed": 89000000 },
+  "payload": {
+    "filename": "payload.zip",
+    "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "compressedSize": 41200000
+  },
+  "minHostVersion": "1.0.0",
+  "targets": {
+    "os": "win32",
+    "arch": ["x64"],
+    "minOsBuild": 17763
+  },
+  "installScope": {
+    "supports": ["user", "machine"],
+    "default": "user"
+  },
+  "requiresReboot": false,
+  "wizard": [
+    {
+      "type": "license",
+      "id": "eula",
+      "fileFromPayload": "EULA.txt"
+    },
+    {
+      "type": "path",
+      "id": "installPath",
+      "label": { "ko": "설치 위치", "en": "Install location", "default": "Install location" },
+      "default": "{ProgramFiles}/Samsung/FullFixtureApp",
+      "validate": ["writable"]
+    },
+    {
+      "type": "checkboxGroup",
+      "id": "components",
+      "label": { "ko": "구성 요소", "en": "Components", "default": "Components" },
+      "items": [
+        { "id": "core",    "label": { "default": "Core engine (required)" }, "default": true, "required": true },
+        { "id": "samples", "label": { "default": "Sample assets" },          "default": true,  "required": false },
+        { "id": "vstPath", "label": { "default": "Register VST3 path" },     "default": false, "required": false }
+      ]
+    },
+    {
+      "type": "select",
+      "id": "shortcut",
+      "label": { "default": "Create shortcuts" },
+      "options": [
+        { "value": "desktop+menu", "label": { "default": "Desktop + Start Menu" }, "default": true },
+        { "value": "menu",         "label": { "default": "Start Menu only" } },
+        { "value": "none",         "label": { "default": "No shortcuts" } }
+      ]
+    },
+    {
+      "type": "text",
+      "id": "deviceName",
+      "label": { "default": "Device nickname (optional)" },
+      "default": "",
+      "optional": true,
+      "regex": "^[A-Za-z0-9_-]{0,32}$"
+    },
+    { "type": "summary" }
+  ],
+  "install": {
+    "extract": [
+      { "from": "core/**",    "to": "{{installPath}}",         "when": "{{components.core}}" },
+      { "from": "samples/**", "to": "{{installPath}}/Samples", "when": "{{components.samples}}" }
+    ]
+  },
+  "postInstall": [
+    {
+      "type": "shortcut",
+      "where": "desktop",
+      "target": "{{installPath}}/bin/main.exe",
+      "name": "Full Fixture App",
+      "when": "{{shortcut}} == 'desktop+menu'"
+    },
+    {
+      "type": "shortcut",
+      "where": "startMenu",
+      "target": "{{installPath}}/bin/main.exe",
+      "name": "Full Fixture App",
+      "when": "{{shortcut}} != 'none'"
+    },
+    {
+      "type": "registry",
+      "hive": "HKCU",
+      "key": "Software\\Samsung\\FullFixtureApp",
+      "values": {
+        "InstallPath": { "type": "REG_SZ", "data": "{{installPath}}" },
+        "Version":     { "type": "REG_SZ", "data": "2.3.1" }
+      }
+    },
+    {
+      "type": "registry",
+      "hive": "HKLM",
+      "key": "Software\\Samsung\\FullFixtureApp\\Machine",
+      "values": {
+        "Registered": { "type": "REG_DWORD", "data": 1 }
+      }
+    },
+    {
+      "type": "envPath",
+      "scope": "user",
+      "add": "{{installPath}}/bin",
+      "when": "{{components.vstPath}}"
+    },
+    {
+      "type": "exec",
+      "cmd": "{{installPath}}/bin/helper.exe",
+      "args": ["--register", "--silent"],
+      "timeoutSec": 30,
+      "allowedHashes": [
+        "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      ],
+      "when": "{{components.vstPath}}"
+    }
+  ],
+  "uninstall": {
+    "removePaths": ["{{installPath}}"],
+    "removeRegistry": [
+      { "hive": "HKCU", "key": "Software\\Samsung\\FullFixtureApp" },
+      { "hive": "HKLM", "key": "Software\\Samsung\\FullFixtureApp" }
+    ],
+    "removeShortcuts": true,
+    "removeEnvPath": true,
+    "preExec": []
+  }
+}

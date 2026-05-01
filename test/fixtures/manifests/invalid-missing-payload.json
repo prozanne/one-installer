@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "com.samsung.vdx.nopayload",
+  "name": { "default": "Missing Payload Fixture" },
+  "version": "1.0.0",
+  "publisher": "Samsung Electronics",
+  "description": { "default": "Invalid: the required 'payload' field is absent." },
+  "size": { "download": 1024, "installed": 2048 },
+  "minHostVersion": "1.0.0",
+  "targets": { "os": "win32", "arch": ["x64"] },
+  "installScope": { "supports": ["user"], "default": "user" },
+  "requiresReboot": false,
+  "wizard": [{ "type": "summary" }],
+  "install": { "extract": [{ "from": "**/*", "to": "{{installPath}}" }] },
+  "postInstall": [],
+  "uninstall": { "removePaths": ["{{installPath}}"], "removeShortcuts": true, "removeEnvPath": true }
+}

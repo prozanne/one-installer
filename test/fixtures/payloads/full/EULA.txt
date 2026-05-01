@@ -1,0 +1,13 @@
+SYNTHETIC END USER LICENSE AGREEMENT
+=====================================
+THIS IS A FAKE EULA FOR TESTING PURPOSES ONLY.
+IT GRANTS NO REAL RIGHTS AND IMPOSES NO REAL OBLIGATIONS.
+
+1. LICENSE GRANT. You are hereby granted a pretend, non-exclusive license.
+2. RESTRICTIONS. Don't pretend to ship real software with this fixture.
+3. DISCLAIMER. THIS SOFTWARE IS PROVIDED "AS IS" FOR TESTING ONLY.
+4. TERMINATION. This fake agreement terminates when the test suite stops.
+
+BY CLICKING "ACCEPT" IN A TEST, YOU AGREE TO NOTHING REAL.
+
+Samsung Electronics Co., Ltd. (SYNTHETIC — NOT A REAL LEGAL ENTITY FOR THIS FILE)

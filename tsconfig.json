@@ -15,13 +15,15 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "verbatimModuleSyntax": true,
-    "lib": ["ES2022"],
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": ["node", "vitest/globals"],
     "baseUrl": "src",
     "paths": {
       "@shared/*": ["shared/*"],
-      "@main/*": ["main/*"]
+      "@main/*": ["main/*"],
+      "@renderer/*": ["renderer/*"]
     }
   },
-  "include": ["src/**/*", "test/**/*", "vitest.config.ts", "scripts/**/*"]
+  "include": ["src/**/*", "test/**/*", "vitest.config.ts", "scripts/**/*", "electron.vite.config.ts"]
 }

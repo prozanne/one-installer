@@ -1,0 +1,10 @@
+{
+  "appId": "com.samsung.vdx.full-fixture",
+  "version": "2.3.1",
+  "settings": {
+    "logLevel": "info",
+    "autoUpdate": true,
+    "telemetry": false
+  },
+  "__note": "Synthetic fixture config — not a real application config."
+}

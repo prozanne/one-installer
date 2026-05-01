@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "com.samsung.vdx.badwhen",
+  "name": { "default": "Bad When Fixture" },
+  "version": "1.0.0",
+  "publisher": "Samsung Electronics",
+  "description": { "default": "Invalid: wizard step has a malformed 'when' expression with double &&." },
+  "size": { "download": 1024, "installed": 2048 },
+  "payload": {
+    "filename": "payload.zip",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "compressedSize": 1024
+  },
+  "minHostVersion": "1.0.0",
+  "targets": { "os": "win32", "arch": ["x64"] },
+  "installScope": { "supports": ["user"], "default": "user" },
+  "requiresReboot": false,
+  "wizard": [{ "type": "summary" }],
+  "install": {
+    "extract": [
+      {
+        "from": "**/*",
+        "to": "{{installPath}}",
+        "when": "{{answers.a}} == 'b' && && {{answers.c}}"
+      }
+    ]
+  },
+  "postInstall": [],
+  "uninstall": { "removePaths": ["{{installPath}}"], "removeShortcuts": true, "removeEnvPath": true }
+}

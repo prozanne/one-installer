@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "id": "com.samsung.vdx.execnohash",
+  "name": { "default": "Exec No Hash Fixture" },
+  "version": "1.0.0",
+  "publisher": "Samsung Electronics",
+  "description": { "default": "Invalid: postInstall exec action is missing the required 'allowedHashes' field." },
+  "size": { "download": 1024, "installed": 2048 },
+  "payload": {
+    "filename": "payload.zip",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "compressedSize": 1024
+  },
+  "minHostVersion": "1.0.0",
+  "targets": { "os": "win32", "arch": ["x64"] },
+  "installScope": { "supports": ["user"], "default": "user" },
+  "requiresReboot": false,
+  "wizard": [{ "type": "summary" }],
+  "install": { "extract": [{ "from": "**/*", "to": "{{installPath}}" }] },
+  "postInstall": [
+    {
+      "type": "exec",
+      "cmd": "{{installPath}}/setup.exe",
+      "args": ["--silent"],
+      "timeoutSec": 30
+    }
+  ],
+  "uninstall": { "removePaths": ["{{installPath}}"], "removeShortcuts": true, "removeEnvPath": true }
+}
