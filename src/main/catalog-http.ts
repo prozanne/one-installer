@@ -7,7 +7,13 @@ export type CatalogKind = 'app' | 'agent';
 export interface FetchInput {
   url: string;
   sigUrl: string;
-  publicKey: Uint8Array;
+  /**
+   * Trust roots — any one matching pubkey passes verification (T1 union
+   * semantics). Single-key callers may pass a single Uint8Array; the agent
+   * catalog flow passes the operator's full trust-root array so dev/prod keys
+   * can both be honored without forcing one or the other.
+   */
+  trustRoots: Uint8Array | Uint8Array[];
   timeoutMs: number;
   userAgent: string;
   /** ETag from the previous successful fetch, sent as If-None-Match for 304-short-circuit. */
@@ -65,11 +71,14 @@ export async function fetchCatalog(input: FetchInput): Promise<Result<FetchOk, s
     const bodyBytes = new Uint8Array(await bodyRes.arrayBuffer());
     const sigBytes = new Uint8Array(await sigRes.arrayBuffer());
 
-    const signatureValid = await verifySignature({
-      message: bodyBytes,
-      signature: sigBytes,
-      publicKey: input.publicKey,
-    });
+    const trustRoots = Array.isArray(input.trustRoots) ? input.trustRoots : [input.trustRoots];
+    let signatureValid = false;
+    for (const pk of trustRoots) {
+      if (await verifySignature({ message: bodyBytes, signature: sigBytes, publicKey: pk })) {
+        signatureValid = true;
+        break;
+      }
+    }
 
     let catalog: CatalogT;
     try {

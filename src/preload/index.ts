@@ -17,10 +17,12 @@ import type {
   SettingsSetReqT,
   SettingsSetResT,
   DiagExportResT,
-  DiagOpenLogsReqT,
   DiagOpenLogsResT,
   UpdateCheckResT,
   UpdateRunResT,
+  AuthSetTokenReqT,
+  AuthSetTokenResT,
+  AuthClearTokenResT,
 } from '@shared/ipc-types';
 
 const ipcApi = {
@@ -54,14 +56,22 @@ const ipcApi = {
   async diagExport(): Promise<DiagExportResT> {
     return ipcRenderer.invoke(IpcChannels.diagExport, {});
   },
-  async diagOpenLogs(req: DiagOpenLogsReqT): Promise<DiagOpenLogsResT> {
-    return ipcRenderer.invoke(IpcChannels.diagOpenLogs, req);
+  async diagOpenLogs(): Promise<DiagOpenLogsResT> {
+    // No payload: the renderer can never name a directory to open. Main
+    // always opens its own logs dir. (Critique Rule 10.)
+    return ipcRenderer.invoke(IpcChannels.diagOpenLogs, {});
   },
   async updateCheck(): Promise<UpdateCheckResT> {
     return ipcRenderer.invoke(IpcChannels.updateCheck, {});
   },
   async updateRun(): Promise<UpdateRunResT> {
     return ipcRenderer.invoke(IpcChannels.updateRun, { confirm: true });
+  },
+  async authSetToken(req: AuthSetTokenReqT): Promise<AuthSetTokenResT> {
+    return ipcRenderer.invoke(IpcChannels.authSetToken, req);
+  },
+  async authClearToken(): Promise<AuthClearTokenResT> {
+    return ipcRenderer.invoke(IpcChannels.authClearToken, {});
   },
   onProgress(cb: (ev: ProgressEventT) => void): () => void {
     const listener = (_e: IpcRendererEvent, payload: ProgressEventT) => cb(payload);

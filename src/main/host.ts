@@ -11,6 +11,8 @@ export interface HostPaths {
   locksDir: string;
   journalDir: string;
   keysDir: string;
+  /** OS-encrypted auth token blob (Electron safeStorage), e.g. GitHub PAT. */
+  authStore: string;
 }
 
 export function resolveHostPaths(): HostPaths {
@@ -23,6 +25,7 @@ export function resolveHostPaths(): HostPaths {
     locksDir: join(userData, 'locks'),
     journalDir: join(userData, 'journal'),
     keysDir: join(userData, 'keys'),
+    authStore: join(userData, 'auth.bin'),
   };
 }
 

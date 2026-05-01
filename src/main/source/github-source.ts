@@ -538,6 +538,7 @@ export class GitHubReleasesSource implements PackageSource {
     validateAppId(appId);
     validateVersion(version);
 
+    // eslint-disable-next-line @typescript-eslint/no-this-alias -- Bound across the asyncIterator's nested closures.
     const self = this;
     const signal = opts?.signal;
     const range = opts?.range;

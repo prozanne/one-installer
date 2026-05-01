@@ -15,7 +15,14 @@ import { join, relative, sep } from 'node:path';
 
 const ROOT = process.cwd();
 const SCAN_DIR = join(ROOT, 'src');
-const ALLOWED_FILE = join('src', 'main', 'source', 'config-defaults.ts');
+// Files allowed to mention the canonical source URLs. Keep this list as
+// short as possible — every entry is a place that bypasses the abstraction.
+const ALLOWED_FILES = new Set<string>([
+  // Original location (kept for back-compat if a file reappears here).
+  'src/main/source/config-defaults.ts',
+  // Current location: shared between main + the test fixtures.
+  'src/shared/config/defaults.ts',
+]);
 
 const FORBIDDEN_PATTERNS: RegExp[] = [
   /samsung\/vdx-catalog/,
@@ -59,7 +66,7 @@ async function main(): Promise<void> {
   const hits: Hit[] = [];
   for await (const file of walk(SCAN_DIR)) {
     const rel = relative(ROOT, file).split(sep).join('/');
-    if (rel === ALLOWED_FILE.split(sep).join('/')) continue;
+    if (ALLOWED_FILES.has(rel)) continue;
     const text = await readFile(file, 'utf-8');
     const lines = text.split(/\r?\n/);
     for (let i = 0; i < lines.length; i++) {
@@ -77,7 +84,7 @@ async function main(): Promise<void> {
   }
 
   console.error('check-no-hardcoded-source: forbidden references found');
-  console.error(`Allowed only in: ${ALLOWED_FILE.split(sep).join('/')}`);
+  console.error(`Allowed only in: ${[...ALLOWED_FILES].join(', ')}`);
   for (const h of hits) {
     console.error(`  ${h.file}:${h.line}  ${h.match}`);
   }

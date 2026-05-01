@@ -11,7 +11,6 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { HttpMirrorSource } from '@main/source/http-mirror-source';
 import { createHttpFake } from '../helpers/http-fake';
 import { buildSourceTree } from '../helpers/build-source-tree';
-import { makeZip } from '../helpers/make-zip';
 import type { HttpFakeServer } from '../helpers/http-fake';
 
 let tmpDir: string;

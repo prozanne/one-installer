@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { Readable } from 'node:stream';
+import type { Readable } from 'node:stream';
 
 /** Compute sha256 of a readable stream; returns lowercase hex. */
 export async function streamSha256(stream: Readable): Promise<string> {

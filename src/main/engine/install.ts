@@ -1,5 +1,6 @@
 import { minimatch } from 'minimatch';
 import { posix as pathPosix } from 'node:path';
+import type { IFs as PlatformFs } from 'memfs';
 import type { JournalEntryT, Manifest, TransactionFileT } from '@shared/schema';
 import type { Platform } from '@main/platform';
 import { extractZipSafe } from '@main/packages/zip-safe';
@@ -82,7 +83,7 @@ export async function runInstall(input: InstallInput): Promise<Result<InstallSuc
   }
   ctx.installPath = installPath;
 
-  const platformFs = (input.platform as unknown as { fs?: import('memfs').IFs }).fs;
+  const platformFs = (input.platform as unknown as { fs?: PlatformFs }).fs;
   const lockRes = await acquireAppLock(input.lockDir, input.manifest.id, platformFs, {
     isPidAlive: (pid) => input.platform.isPidAlive(pid),
   });

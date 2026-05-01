@@ -8,12 +8,9 @@
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as nodeFsPromises from 'node:fs/promises';
-import * as nodeFs from 'node:fs';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { LocalFsSource } from '@main/source/local-fs-source';
-import { isSourceError } from '@shared/source/package-source';
 import { buildSourceTree } from '../helpers/build-source-tree';
-import { makeZip } from '../helpers/make-zip';
 
 let tmpDir: string;
 

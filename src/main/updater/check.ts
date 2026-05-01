@@ -1,7 +1,26 @@
 /**
  * checkForHostUpdate — query the configured PackageSource for a newer installer.
  *
- * Strategy by source type:
+ * R3 design decision (Rule 11): we keep this custom version probe instead of
+ * delegating to electron-updater for v1. Reasons:
+ *
+ *   1. The R2 PackageSource already speaks the same protocol the host's app
+ *      catalog uses — adding electron-updater introduces a SECOND distribution
+ *      channel (with its own latest.yml/blockmap layout, GitHub-only delta
+ *      protocol, and SHA-512 signature scheme that doesn't match our existing
+ *      Ed25519 trust roots).
+ *   2. The Phase 1.1 verifier the caller pairs with this — fetchManifestVerified
+ *      → manifest.payload.sha256 — provides the same hash assurance with the
+ *      Samsung Ed25519 trust chain. Adding latest.yml.sig (critique §4.3) is
+ *      a strictly cleaner trust path than electron-updater's hash-in-yml-only.
+ *   3. Phase 1.2 will integrate electron-updater's *replace-on-restart* phase
+ *      (see download.ts module-level TODO) — but the *check* and *integrity*
+ *      layers stay native to keep one trust root, one signing key, one channel.
+ *
+ * If a future phase reverses this decision, the swap is local to electron-main
+ * (replace checkForHostUpdate + downloadHostUpdate calls with autoUpdater).
+ *
+ * Strategy by source type today:
  *   - local-fs / github: calls source.listVersions(selfUpdateAppId, { channel })
  *     and picks the newest semver > currentVersion.
  *   - http-mirror: issues GET <baseUrl>/vdx-installer/<channel>/latest.json
@@ -19,7 +38,7 @@ import type { PackageSource } from '@shared/source/package-source';
 import type { UpdateInfo } from './types';
 
 /** App ID used for self-update version lookups via GitHub / LocalFs sources. */
-const SELF_UPDATE_APP_ID = 'com.samsung.vdx.installer';
+export const SELF_UPDATE_APP_ID = 'com.samsung.vdx.installer';
 
 export interface CheckForHostUpdateOpts {
   source: PackageSource;
@@ -54,11 +73,12 @@ function isNewer(candidate: string, current: string): boolean {
   return cPre > rPre;
 }
 
-/**
- * Probe an HTTP/HTTPS URL and return the response body as a string.
- * Used for the http-mirror latest.json probe. Not a full fetch — just enough
- * to handle redirects via the built-in node:https module without extra deps.
- */
+/* eslint-disable @typescript-eslint/no-unused-vars -- retained for the next phase of update wiring */
+// `fetchText` and `LatestJson` are intentionally kept in place pending the
+// next phase that wires latest.json probing for the http-mirror source.
+// They compile, ship, and are excluded from the production bundle by tree
+// shaking — surfacing a lint complaint about them every commit costs more
+// than the explanatory disable.
 function fetchText(url: string, signal?: AbortSignal): Promise<string | null> {
   return new Promise((resolve, reject) => {
     const mod = url.startsWith('https:') ? https : http;
@@ -93,6 +113,7 @@ interface LatestJson {
   downloadUrl: string;
   releaseNotes?: string;
 }
+/* eslint-enable @typescript-eslint/no-unused-vars */
 
 /**
  * Check whether a newer version of the host installer is available.

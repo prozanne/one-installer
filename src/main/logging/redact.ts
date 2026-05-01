@@ -15,7 +15,7 @@ const GH_FG_PAT_RE = /\bgithub_pat_[A-Za-z0-9_]{22,}\b/g;
 
 // Generic Authorization headers and bearer tokens. Captures the prefix so the
 // reader can tell what kind of credential was scrubbed.
-const BEARER_RE = /\bBearer\s+[A-Za-z0-9._\-]{16,}\b/gi;
+const BEARER_RE = /\bBearer\s+[A-Za-z0-9._-]{16,}\b/gi;
 
 // Long hex strings — Ed25519 keys (32-byte = 64 hex chars), SHA-256 digests,
 // random session IDs. The library may include the offending bytes in error

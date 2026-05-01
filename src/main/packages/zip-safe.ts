@@ -60,7 +60,10 @@ export function checkEntryName(name: string): void {
   if (name.includes('\\')) {
     throw new Error(`Refusing entry with backslash separator: ${name}`);
   }
-  // NUL and other control bytes have no business in zip entry names.
+  // NUL and other control bytes have no business in zip entry names. The
+  // control-character regex *is* the point of this check, so the lint rule
+  // that flags raw control chars in regexes is intentionally suppressed.
+  // eslint-disable-next-line no-control-regex
   if (/[\x00-\x1f]/.test(name)) {
     throw new Error(`Refusing entry with control characters: ${name}`);
   }

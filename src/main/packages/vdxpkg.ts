@@ -13,7 +13,7 @@ export interface ParsedVdxpkg {
 
 export async function parseVdxpkg(
   vdxpkgBytes: Buffer,
-  publicKey: Uint8Array,
+  publicKey: Uint8Array | Uint8Array[],
 ): Promise<Result<ParsedVdxpkg, string>> {
   const tmp = createFsFromVolume(new Volume()) as unknown as IFs;
   await tmp.promises.mkdir('/tmp', { recursive: true });
@@ -34,11 +34,23 @@ export async function parseVdxpkg(
   const sigBytes = (await tmp.promises.readFile('/tmp/manifest.json.sig')) as Buffer;
   const payloadBytes = (await tmp.promises.readFile('/tmp/payload.zip')) as Buffer;
 
-  const sigValid = await verifySignature({
-    message: new Uint8Array(manifestBytes),
-    signature: new Uint8Array(sigBytes),
-    publicKey,
-  });
+  // Accept either a single pubkey or an array of trust roots — any match wins.
+  // This keeps the simple single-key callers (sideload, tests) intact while
+  // letting catalog flows pass the full trust-root union.
+  const trustRoots = Array.isArray(publicKey) ? publicKey : [publicKey];
+  let sigValid = false;
+  for (const pk of trustRoots) {
+    if (
+      await verifySignature({
+        message: new Uint8Array(manifestBytes),
+        signature: new Uint8Array(sigBytes),
+        publicKey: pk,
+      })
+    ) {
+      sigValid = true;
+      break;
+    }
+  }
   let manifest: Manifest;
   try {
     manifest = ManifestSchema.parse(JSON.parse(manifestBytes.toString('utf-8')));

@@ -1,4 +1,5 @@
 import type { PostInstallActionT, JournalEntryT } from '@shared/schema';
+import type { Platform } from '@main/platform';
 import { evaluateWhen } from '@main/engine/when-expr';
 import { shortcutHandler } from './shortcut';
 import { registryHandler } from './registry';
@@ -30,10 +31,7 @@ export async function applyAction(
   }
 }
 
-export async function inverseAction(
-  entry: JournalEntryT,
-  platform: import('@main/platform').Platform,
-): Promise<void> {
+export async function inverseAction(entry: JournalEntryT, platform: Platform): Promise<void> {
   switch (entry.type) {
     case 'shortcut':
       return shortcutHandler.inverse(entry, platform);

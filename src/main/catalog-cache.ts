@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { CatalogSchema, type CatalogT } from '@shared/schema';
 import type { CatalogKindT } from '@shared/ipc-types';
@@ -44,12 +44,17 @@ export class CatalogCache {
       // host before we evolved the schema; in that case discard it rather than
       // surface a typed but stale shape).
       const catalog = CatalogSchema.parse(raw['catalog']);
-      const signatureValid = raw['signatureValid'] === true;
+      // Critical: ignore the on-disk `signatureValid` flag. We don't store the
+      // signature bytes alongside the catalog so we can't re-verify from cache;
+      // a local attacker who flips this flag on disk would otherwise have the
+      // tampered catalog treated as signature-validated forever after. Force
+      // the cached read to "unverified" — the next online refresh will perform
+      // a real signature check and update the flag for the next cold start.
       const fetchedAt = String(raw['fetchedAt'] ?? '');
       const sourceUrl = String(raw['sourceUrl'] ?? '');
       const etag = raw['etag'] === null ? null : typeof raw['etag'] === 'string' ? raw['etag'] : null;
       if (!fetchedAt || !sourceUrl) return null;
-      return { catalog, signatureValid, fetchedAt, sourceUrl, etag };
+      return { catalog, signatureValid: false, fetchedAt, sourceUrl, etag };
     } catch {
       // Drop corrupt cache silently — never block startup on a bad cache file.
       try {
@@ -63,13 +68,13 @@ export class CatalogCache {
 
   write(kind: CatalogKindT, record: CatalogCacheRecord): void {
     // Write via tmp+rename so a crash mid-write doesn't leave a torn file
-    // that would silently be dropped on next read.
+    // that would silently be dropped on next read. mode 0o600 so a multi-user
+    // POSIX host can't have another local account replace the cache.
     const file = this.fileFor(kind);
     const tmp = `${file}.tmp`;
-    writeFileSync(tmp, JSON.stringify(record));
+    writeFileSync(tmp, JSON.stringify(record), { mode: 0o600 });
     try {
       // node's renameSync is atomic on the same volume.
-      const { renameSync } = require('node:fs') as typeof import('node:fs');
       renameSync(tmp, file);
     } catch (e) {
       try {

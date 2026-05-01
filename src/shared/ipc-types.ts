@@ -16,6 +16,8 @@ export const IpcChannels = {
   diagOpenLogs: 'diag:open-logs',
   updateCheck: 'update:check',
   updateRun: 'update:run',
+  authSetToken: 'auth:setToken',
+  authClearToken: 'auth:clearToken',
 } as const;
 
 export const CatalogKindSchema = z.enum(['app', 'agent']);
@@ -158,12 +160,18 @@ export type SettingsSetResT = z.infer<typeof SettingsSetRes>;
 // ---------------------------------------------------------------------------
 
 export const DiagExportReq = z.object({});
+// Path-free response: main writes the archive and reveals it via
+// shell.showItemInFolder; the renderer never learns the host filesystem
+// layout. (Critique F-09 / Rule 10.)
 export const DiagExportRes = z.discriminatedUnion('ok', [
-  z.object({ ok: z.literal(true), archivePath: z.string() }),
+  z.object({ ok: z.literal(true) }),
   z.object({ ok: z.literal(false), error: z.string() }),
 ]);
 
-export const DiagOpenLogsReq = z.object({ targetDir: z.string() });
+// No payload: main always opens its own paths.logsDir. Accepting a renderer-
+// supplied path would let any compromised UI ask the OS to open arbitrary
+// directories. (Critique F-09 / Rule 10.)
+export const DiagOpenLogsReq = z.object({});
 export const DiagOpenLogsRes = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(true) }),
   z.object({ ok: z.literal(false), error: z.string() }),
@@ -201,3 +209,29 @@ export type UpdateCheckReqT = z.infer<typeof UpdateCheckReq>;
 export type UpdateCheckResT = z.infer<typeof UpdateCheckRes>;
 export type UpdateRunReqT = z.infer<typeof UpdateRunReq>;
 export type UpdateRunResT = z.infer<typeof UpdateRunRes>;
+
+// ---------------------------------------------------------------------------
+// Auth IPC — first-run PAT flow (design spec §13.2). Tokens are stored at the
+// OS layer via Electron safeStorage; the response NEVER echoes the token, not
+// even a prefix or length. The renderer's job is to forget the value as soon
+// as the IPC call returns.
+// ---------------------------------------------------------------------------
+
+export const AuthSetTokenReq = z.object({
+  token: z.string().min(1).max(256),
+});
+export const AuthSetTokenRes = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true) }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+]);
+
+export const AuthClearTokenReq = z.object({});
+export const AuthClearTokenRes = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true) }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+]);
+
+export type AuthSetTokenReqT = z.infer<typeof AuthSetTokenReq>;
+export type AuthSetTokenResT = z.infer<typeof AuthSetTokenRes>;
+export type AuthClearTokenReqT = z.infer<typeof AuthClearTokenReq>;
+export type AuthClearTokenResT = z.infer<typeof AuthClearTokenRes>;

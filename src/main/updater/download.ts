@@ -75,7 +75,11 @@ export async function downloadHostUpdate(
   }
 
   const hasher = createHash('sha256');
-  const writer = createWriteStream(opts.destPath);
+  // mode 0o600 — only the owner may read or replace the staged update binary.
+  // Without this the file inherits umask defaults (typically 0o644 on POSIX),
+  // and on a multi-user host another local account could swap in their own
+  // bytes between download and the eventual replace-on-restart step.
+  const writer = createWriteStream(opts.destPath, { mode: 0o600 });
 
   const iterable = opts.source.fetchPayload(coords.appId, coords.version, {
     signal: opts.signal,

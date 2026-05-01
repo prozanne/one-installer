@@ -1,8 +1,8 @@
-import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, shell, safeStorage } from 'electron';
 import { join } from 'node:path';
-import { mkdirSync, createWriteStream } from 'node:fs';
+import { mkdirSync, createWriteStream, writeFileSync, existsSync, unlinkSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import * as nodeFs from 'node:fs';
 import * as yazl from 'yazl';
@@ -27,7 +27,7 @@ import {
   fetchManifestVerified,
   fetchPayloadStream,
 } from './catalog';
-import { checkForHostUpdate, downloadHostUpdate } from './updater';
+import { checkForHostUpdate, downloadHostUpdate, SELF_UPDATE_APP_ID } from './updater';
 import {
   IpcChannels,
   SideloadOpenReq,
@@ -41,6 +41,8 @@ import {
   DiagOpenLogsReq,
   UpdateCheckReq,
   UpdateRunReq,
+  AuthSetTokenReq,
+  AuthClearTokenReq,
   type SideloadOpenResT,
   type InstallRunResT,
   type UninstallRunResT,
@@ -55,6 +57,8 @@ import {
   type DiagOpenLogsResT,
   type UpdateCheckResT,
   type UpdateRunResT,
+  type AuthSetTokenResT,
+  type AuthClearTokenResT,
 } from '@shared/ipc-types';
 import type { CatalogT, Manifest } from '@shared/schema';
 import type { PackageSource } from '@shared/source/package-source';
@@ -64,6 +68,13 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url));
 /** Maximum number of concurrent sideload sessions before we evict the oldest. */
 const MAX_SIDELOAD_SESSIONS = 8;
 
+/**
+ * Maximum number of file paths the picker can publish before the oldest is
+ * evicted. Caps the worst-case "spam pickVdxpkg" memory growth — the renderer
+ * cannot accumulate an unbounded allowlist of paths it might one day claim.
+ */
+const MAX_PICKED_PATHS = 16;
+
 interface SideloadSession {
   manifest: Manifest;
   payloadBytes: Buffer;
@@ -72,6 +83,40 @@ interface SideloadSession {
   kind: CatalogKindT;
 }
 const sideloadSessions = new Map<string, SideloadSession>();
+
+/**
+ * Paths that `sideload:pick` has handed back to the renderer. `sideload:open`
+ * only honors paths in this set — without this gate the renderer would have
+ * an IPC-exposed `fs.readFile` for any user-readable file the OS will allow.
+ * Each entry is single-use: claimed by `sideload:open` and removed.
+ */
+const pickedPaths = new Set<string>();
+
+/**
+ * Refcount of in-flight install / uninstall / catalogInstall operations.
+ * `update:run` must refuse while any of these are in flight (applying a
+ * host-update mid-install leaves journal/transaction state inconsistent
+ * across the relaunch boundary).
+ *
+ * Counter (not boolean) so that two overlapping installs can't release the
+ * mutex prematurely: if A and B both increment, A's `finally` decrements
+ * to 1, and `update:run` correctly still sees `> 0` while B continues.
+ */
+let activeTransactions = 0;
+function beginTransaction(): void {
+  activeTransactions++;
+}
+function endTransaction(): void {
+  if (activeTransactions > 0) activeTransactions--;
+}
+
+function rememberPickedPath(p: string): void {
+  if (pickedPaths.size >= MAX_PICKED_PATHS) {
+    const oldest = pickedPaths.values().next().value;
+    if (oldest !== undefined) pickedPaths.delete(oldest);
+  }
+  pickedPaths.add(p);
+}
 
 /** Evict the oldest session if the map is at capacity. */
 function evictOldestSideloadSession(): void {
@@ -120,6 +165,27 @@ function createWindow(): void {
 
   mainWindow.removeMenu();
 
+  // Strict CSP. Setting it via webRequest is the only way to enforce it for
+  // both the prod file:// load and the dev http://localhost Vite load — a
+  // <meta> tag in index.html is too late for some sources (e.g. preconnects)
+  // and Vite does not inject one in dev. `connect-src 'none'` blocks any
+  // accidental fetch() from the renderer; all network is supposed to go
+  // through main via IPC. `style-src 'unsafe-inline'` is required by React's
+  // injected style tags; everything else is locked down.
+  // Dev relaxations: Vite/HMR loads modules over ws: and inline-eval; only
+  // applied when ELECTRON_RENDERER_URL is set so prod builds stay strict.
+  const csp = process.env['ELECTRON_RENDERER_URL']
+    ? "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:* ws://localhost:*; style-src 'self' 'unsafe-inline'; img-src 'self' data: http://localhost:*; connect-src 'self' ws://localhost:* http://localhost:*; font-src 'self' data:"
+    : "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; font-src 'self' data:";
+  mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Content-Security-Policy': [csp],
+      },
+    });
+  });
+
   mainWindow.once('ready-to-show', () => {
     mainWindow?.show();
   });
@@ -136,13 +202,32 @@ function createWindow(): void {
     return { action: 'deny' };
   });
 
+  // Compute the exact renderer entry-point URL once. Anything other than this
+  // file (and, in dev, the Vite dev server's exact origin) is a navigation we
+  // do not authorize: arbitrary `file://` URLs could otherwise reach
+  // `file:///C:/Windows/...`, and a prefix match on the dev origin would let
+  // `http://localhost:51730/evil` slip past `http://localhost:5173`.
+  const rendererFileUrl = pathToFileURL(join(__dirname, '../renderer/index.html')).href;
+  const allowedDevOrigin = (() => {
+    const devUrl2 = process.env['ELECTRON_RENDERER_URL'];
+    if (!devUrl2) return null;
+    try {
+      return new URL(devUrl2).origin;
+    } catch {
+      return null;
+    }
+  })();
+
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    // Allow only the dev server URL or the local file load. Anything else —
-    // a redirect from a malicious link, a programmatic location.href set —
-    // would otherwise navigate the BrowserWindow off our origin.
-    const allowedDev = process.env['ELECTRON_RENDERER_URL'];
-    if (allowedDev && url.startsWith(allowedDev)) return;
-    if (url.startsWith('file://')) return;
+    let target: URL;
+    try {
+      target = new URL(url);
+    } catch {
+      event.preventDefault();
+      return;
+    }
+    if (allowedDevOrigin && target.origin === allowedDevOrigin) return;
+    if (url === rendererFileUrl) return;
     event.preventDefault();
   });
 
@@ -271,7 +356,26 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Trust roots: config.trustRoots (base64-encoded) + the dev key for Phase 1.1.
+  // Trust roots: config.trustRoots (base64-encoded) is the primary trust anchor.
+  // The per-device dev keypair is included only when (a) the build is unpacked
+  // (i.e. running from `electron .` in dev) or (b) the operator's vdx.config.json
+  // explicitly enabled developerMode. A packaged production build with default
+  // config will never accept signatures from a locally generated key — that's
+  // critique F-12. If config.trustRoots is empty in a packaged build, signature
+  // verification will fail loudly rather than silently fall back.
+  const includeDevKey = !app.isPackaged || config.developerMode;
+  if (app.isPackaged && config.developerMode) {
+    // A production build with developerMode active means the operator's
+    // vdx.config.json is granting trust to the per-device dev keypair, which
+    // signs *anything* this machine generates. That's the right tool for IT
+    // staging but a footgun in user hands — flag it loudly at every startup
+    // so a misplaced config doesn't sit unnoticed in a fleet rollout.
+    console.warn(
+      '[vdx-installer] WARNING: developerMode=true in vdx.config.json. ' +
+        'The per-device dev key is being added to trust roots. ' +
+        'This must NOT be enabled in user-facing builds.',
+    );
+  }
   const getTrustRoots = async (): Promise<Uint8Array[]> => {
     const roots: Uint8Array[] = [];
     if (config.trustRoots) {
@@ -279,8 +383,15 @@ async function main(): Promise<void> {
         roots.push(Buffer.from(b64, 'base64'));
       }
     }
-    // Always include the dev key as a trust root in Phase 1.1.
-    roots.push(await getDevPubKey());
+    if (includeDevKey) roots.push(await getDevPubKey());
+    if (roots.length === 0) {
+      // Never silently accept anything. If the operator forgot to ship trust
+      // roots in a packaged build, surface a fatal error here so the failure
+      // is visible at boot, not during the first signature check.
+      throw new Error(
+        'No trust roots available — set vdx.config.json `trustRoots` or enable developerMode',
+      );
+    }
     return roots;
   };
 
@@ -300,15 +411,25 @@ async function main(): Promise<void> {
       filters: [{ name: 'VDX Package', extensions: ['vdxpkg'] }],
       properties: ['openFile'],
     });
+    // Remember every path the user actually selected so `sideload:open` can
+    // verify the renderer is asking for a file the picker just handed it.
+    if (!result.canceled) {
+      for (const p of result.filePaths) rememberPickedPath(p);
+    }
     return result;
   });
 
   ipcMain.handle(IpcChannels.sideloadOpen, async (_e, raw): Promise<SideloadOpenResT> => {
     const parsed = SideloadOpenReq.safeParse(raw);
     if (!parsed.success) return { ok: false, error: 'invalid request' };
-    // Evict the oldest session if at capacity, then clear stale entries.
+    // Picker allowlist: only paths returned by `sideload:pick` may be opened.
+    // Without this gate the renderer can name any user-readable file and we
+    // would `readFileSync` it — effectively turning IPC into `fs.readFile`.
+    // Single-use semantics: claim+remove so a stale path can't be replayed.
+    if (!pickedPaths.delete(parsed.data.vdxpkgPath)) {
+      return { ok: false, error: 'unauthorized path — open the file via the picker dialog' };
+    }
     evictOldestSideloadSession();
-    sideloadSessions.clear();
     try {
       const bytes = nodeFs.readFileSync(parsed.data.vdxpkgPath);
       const result = await parseVdxpkg(bytes, await getDevPubKey());
@@ -339,6 +460,7 @@ async function main(): Promise<void> {
     if (!parsed.success) return { ok: false, error: 'invalid request' };
     const session = sideloadSessions.get(parsed.data.sessionId);
     if (!session) return { ok: false, error: 'session expired or unknown' };
+    beginTransaction();
     // Always release the session (and its full payload Buffer) when this
     // handler returns — success, validation failure, or thrown exception.
     try {
@@ -381,6 +503,7 @@ async function main(): Promise<void> {
       return { ok: false, error: msg };
     } finally {
       sideloadSessions.delete(parsed.data.sessionId);
+      endTransaction();
     }
   });
 
@@ -410,7 +533,10 @@ async function main(): Promise<void> {
       const result = await fetchCatalog({
         url: config.agentCatalog.url,
         sigUrl: config.agentCatalog.sigUrl,
-        publicKey: await getDevPubKey(),
+        // Verify against the operator's full trust-root union, not just the
+        // dev key. Agent catalog signature must satisfy the same trust chain
+        // as the app catalog. (F-12 fix for agent kind.)
+        trustRoots: await getTrustRoots(),
         timeoutMs: 15_000,
         userAgent: `vdx-installer/${HOST_VERSION}`,
         ifNoneMatch: cur?.etag ?? null,
@@ -514,9 +640,23 @@ async function main(): Promise<void> {
     if (!cur) {
       return { ok: false, error: 'Catalog not loaded yet — refresh the catalog tab first.' };
     }
+    // Refuse to install from an unverified catalog. A tampered catalog could
+    // swap an entry's `packageUrl` to point at a different (still-Samsung-signed)
+    // app — the inner manifest sig would still verify, but the user would have
+    // installed something other than what they clicked. The signature on the
+    // catalog itself is what binds the displayed name → packageUrl mapping.
+    if (cur.signatureValid !== true) {
+      return {
+        ok: false,
+        error:
+          'Catalog signature is not verified for this session. ' +
+          'Refresh the catalog tab from a trusted network before installing.',
+      };
+    }
     const item = cur.catalog.apps.find((a) => a.id === parsed.data.appId);
     if (!item) return { ok: false, error: `Item not in catalog: ${parsed.data.appId}` };
 
+    beginTransaction();
     try {
       const trustRoots = await getTrustRoots();
 
@@ -554,7 +694,11 @@ async function main(): Promise<void> {
         });
         if (!pkgRes.ok) return { ok: false, error: pkgRes.error };
         emitProgress({ phase: 'verify', message: 'Verifying signature…', percent: 100 });
-        const parseRes = await parseVdxpkg(pkgRes.value, await getDevPubKey());
+        // Verify the inner manifest signature against the operator's full
+        // trust-root union — not the dev key alone. Catalog-installed agents
+        // must satisfy the same trust chain as anything else fetched from a
+        // configured source. (F-12 fix for the agent kind.)
+        const parseRes = await parseVdxpkg(pkgRes.value, await getTrustRoots());
         if (!parseRes.ok) return { ok: false, error: parseRes.error };
 
         evictOldestSideloadSession();
@@ -630,8 +774,10 @@ async function main(): Promise<void> {
 
       const payloadBytes = Buffer.concat(chunks);
 
-      // Parse the .vdxpkg-style payload bytes (ZIP) through the engine
-      const parseRes = await parseVdxpkg(payloadBytes, await getDevPubKey());
+      // Parse the .vdxpkg-style payload bytes (ZIP) through the engine.
+      // Inner manifest signature verified against the trust-root union (F-12);
+      // the outer manifest was already verified by fetchManifestVerified.
+      const parseRes = await parseVdxpkg(payloadBytes, await getTrustRoots());
       if (!parseRes.ok) return { ok: false, error: parseRes.error };
 
       evictOldestSideloadSession();
@@ -655,12 +801,15 @@ async function main(): Promise<void> {
       };
     } catch (e) {
       return { ok: false, error: (e as Error).message };
+    } finally {
+      endTransaction();
     }
   });
 
   ipcMain.handle(IpcChannels.uninstallRun, async (_e, raw): Promise<UninstallRunResT> => {
     const parsed = UninstallRunReq.safeParse(raw);
     if (!parsed.success) return { ok: false, error: 'invalid request' };
+    beginTransaction();
     try {
       const state = await installedStore.read();
       const app2 = state.apps[parsed.data.appId];
@@ -681,6 +830,8 @@ async function main(): Promise<void> {
       return { ok: true };
     } catch (e) {
       return { ok: false, error: (e as Error).message };
+    } finally {
+      endTransaction();
     }
   });
 
@@ -742,7 +893,11 @@ async function main(): Promise<void> {
           zipFile.end();
         })();
       });
-      return { ok: true, archivePath };
+      // Reveal the archive in the OS file manager from main, so the renderer
+      // never receives a path string. The user still gets visual confirmation
+      // ("here's your zip"), but the process boundary stays one-way.
+      shell.showItemInFolder(archivePath);
+      return { ok: true };
     } catch (e) {
       return { ok: false, error: (e as Error).message };
     }
@@ -794,6 +949,12 @@ async function main(): Promise<void> {
   ipcMain.handle(IpcChannels.updateRun, async (_e, raw): Promise<UpdateRunResT> => {
     const parsed = UpdateRunReq.safeParse(raw);
     if (!parsed.success) return { ok: false, error: 'invalid request' };
+    if (activeTransactions > 0) {
+      return {
+        ok: false,
+        error: 'An install is in progress. Complete or cancel it before restarting.',
+      };
+    }
     try {
       const selfUpdateConfig =
         config.source.type === 'github' && config.source.github
@@ -807,14 +968,27 @@ async function main(): Promise<void> {
       });
       if (!info) return { ok: false, error: 'No update available' };
 
+      // Refetch the host-installer manifest through the verified path so
+      // the SHA-256 we hand to downloadHostUpdate is signed by a trust root —
+      // never user-supplied, never blank. Without this, an attacker who can
+      // tamper with the payload bytes (e.g. a corporate MITM proxy) wins.
+      let updateManifest: Manifest;
+      try {
+        updateManifest = await fetchManifestVerified(
+          packageSource,
+          SELF_UPDATE_APP_ID,
+          info.latestVersion,
+          { trustRoots: await getTrustRoots() },
+        );
+      } catch (e) {
+        return { ok: false, error: `Update manifest verify failed: ${(e as Error).message}` };
+      }
+
       const destPath = join(paths.cacheDir, `vdx-installer-${info.latestVersion}.staged`);
       await downloadHostUpdate(info, {
         source: packageSource,
         destPath,
-        // Phase 1.1: SHA-256 comes from the manifest fetched by checkForHostUpdate.
-        // For Phase 1.2 this must be verified against a trusted manifest signature.
-        // TODO (Phase 1.2): read expectedSha256 from the verified manifest.
-        expectedSha256: '',
+        expectedSha256: updateManifest.payload.sha256,
       });
 
       // TODO (Phase 1.2): Authenticode verification + replace-on-restart:
@@ -822,6 +996,45 @@ async function main(): Promise<void> {
       //   app.quit();
       console.info('[vdx] update:run: Phase 1.1 — download complete. Phase 1.2 replace-on-restart not yet implemented.');
 
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // auth:setToken / auth:clearToken — first-run PAT flow.
+  //
+  // Tokens are encrypted with Electron safeStorage (Keychain on macOS,
+  // DPAPI on Windows, libsecret on Linux). The encrypted blob lives at
+  // paths.authStore. We never store the plaintext; we never echo it back
+  // to the renderer. If safeStorage is unavailable on the platform (rare —
+  // requires libsecret on Linux), set/clear fail rather than fall back to
+  // plaintext storage. Failing closed is the safer default for a credential.
+  // -----------------------------------------------------------------------
+
+  ipcMain.handle(IpcChannels.authSetToken, async (_e, raw): Promise<AuthSetTokenResT> => {
+    const parsed = AuthSetTokenReq.safeParse(raw);
+    if (!parsed.success) return { ok: false, error: 'invalid request' };
+    if (!safeStorage.isEncryptionAvailable()) {
+      return { ok: false, error: 'OS secure storage unavailable on this system' };
+    }
+    try {
+      const encrypted = safeStorage.encryptString(parsed.data.token);
+      // mode 0o600 best-effort — POSIX only; Windows ACLs already restrict the
+      // userData dir to the current user account.
+      writeFileSync(paths.authStore, encrypted, { mode: 0o600 });
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+  });
+
+  ipcMain.handle(IpcChannels.authClearToken, async (_e, raw): Promise<AuthClearTokenResT> => {
+    const parsed = AuthClearTokenReq.safeParse(raw ?? {});
+    if (!parsed.success) return { ok: false, error: 'invalid request' };
+    try {
+      if (existsSync(paths.authStore)) unlinkSync(paths.authStore);
       return { ok: true };
     } catch (e) {
       return { ok: false, error: (e as Error).message };

@@ -1,3 +1,4 @@
+import type { IFs as PlatformFs } from 'memfs';
 import type { JournalEntryT, Manifest } from '@shared/schema';
 import type { Platform } from '@main/platform';
 import { acquireAppLock } from '@main/state/lock';
@@ -19,7 +20,7 @@ export interface UninstallInput {
 }
 
 export async function runUninstall(input: UninstallInput): Promise<Result<true, string>> {
-  const platformFs = (input.platform as unknown as { fs?: import('memfs').IFs }).fs;
+  const platformFs = (input.platform as unknown as { fs?: PlatformFs }).fs;
   const lockRes = await acquireAppLock(input.lockDir, input.manifest.id, platformFs, {
     isPidAlive: (pid) => input.platform.isPidAlive(pid),
   });

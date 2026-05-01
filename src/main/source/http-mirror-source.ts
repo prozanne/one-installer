@@ -7,7 +7,7 @@
  */
 import * as https from 'node:https';
 import * as http from 'node:http';
-import { Readable } from 'node:stream';
+import type { Readable } from 'node:stream';
 import type {
   PackageSource,
   CatalogFetchResult,

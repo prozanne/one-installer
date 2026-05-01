@@ -63,9 +63,8 @@ describe('fetchCatalogVerified', () => {
 
   it('throws Error on signature verification failure', async () => {
     const src = new LocalFsSource({ rootPath: tmpDir });
-    // Use a different public key (verification should fail)
-    const wrongKey = new Uint8Array(32).fill(0x42);
-    // Generate a valid-format wrong key
+    // Generate a valid-format wrong key — Ed25519 verify must reject any
+    // signature produced with the matching priv against the host's roots.
     const privKey = ed.utils.randomPrivateKey();
     const wrongPub = await ed.getPublicKeyAsync(privKey);
 

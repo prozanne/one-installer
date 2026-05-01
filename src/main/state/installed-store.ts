@@ -1,5 +1,5 @@
 import type { IFs } from 'memfs';
-import * as nodeFs from 'node:fs';
+import type * as nodeFs from 'node:fs';
 import { atomicWriteJson, readJsonWithBakFallback, type ReadStatus } from './atomic-write';
 import { InstalledStateSchema, type InstalledStateT } from '@shared/schema';
 

@@ -5,7 +5,7 @@ import type { ProgressEventT } from '@shared/ipc-types';
 describe('createProgressThrottle', () => {
   it('forwards the first event of a phase immediately', () => {
     const out: ProgressEventT[] = [];
-    let t = 0;
+    const t = 0;
     const tr = createProgressThrottle({
       intervalMs: 33,
       forward: (e) => out.push(e),

@@ -550,10 +550,9 @@ describe('DiagExportReq', () => {
 });
 
 describe('DiagExportRes', () => {
-  it('accepts ok:true with archivePath', () => {
-    const result = DiagExportRes.parse({ ok: true, archivePath: '/tmp/diag.zip' });
+  it('accepts ok:true (path-free response per Rule 10)', () => {
+    const result = DiagExportRes.parse({ ok: true });
     expect(result.ok).toBe(true);
-    if (result.ok) expect(result.archivePath).toBe('/tmp/diag.zip');
   });
 
   it('accepts ok:false branch', () => {
@@ -561,19 +560,20 @@ describe('DiagExportRes', () => {
     expect(result.ok).toBe(false);
   });
 
-  it('rejects ok:true missing archivePath', () => {
-    expect(() => DiagExportRes.parse({ ok: true })).toThrow();
+  it('strips archivePath if a stale caller still sends it', () => {
+    // zod object schemas strip unknown keys by default — this is the contract
+    // the renderer relies on: even if main is updated mid-rollout to keep
+    // returning archivePath, the renderer's parsed object will not contain it.
+    const result = DiagExportRes.parse({ ok: true, archivePath: '/tmp/diag.zip' });
+    expect(result.ok).toBe(true);
+    expect((result as Record<string, unknown>)['archivePath']).toBeUndefined();
   });
 });
 
 describe('DiagOpenLogsReq', () => {
-  it('accepts valid targetDir', () => {
-    const result = DiagOpenLogsReq.parse({ targetDir: '/var/log/vdx' });
-    expect(result.targetDir).toBe('/var/log/vdx');
-  });
-
-  it('rejects missing targetDir', () => {
-    expect(() => DiagOpenLogsReq.parse({})).toThrow();
+  it('accepts empty object (path-free request per Rule 10)', () => {
+    const result = DiagOpenLogsReq.parse({});
+    expect(result).toEqual({});
   });
 });
 
