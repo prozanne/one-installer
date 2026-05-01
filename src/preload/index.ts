@@ -29,6 +29,7 @@ import type {
   HostSetAutoLaunchReqT,
   HostSetAutoLaunchResT,
   HostGetAutoLaunchResT,
+  HostInfoResT,
   AuthSetTokenReqT,
   AuthSetTokenResT,
   AuthClearTokenResT,
@@ -111,6 +112,9 @@ const ipcApi = {
   },
   async hostGetAutoLaunch(): Promise<HostGetAutoLaunchResT> {
     return ipcRenderer.invoke(IpcChannels.hostGetAutoLaunch, {});
+  },
+  async hostInfo(): Promise<HostInfoResT> {
+    return ipcRenderer.invoke(IpcChannels.hostInfo, {});
   },
   async authSetToken(req: AuthSetTokenReqT): Promise<AuthSetTokenResT> {
     return ipcRenderer.invoke(IpcChannels.authSetToken, req);

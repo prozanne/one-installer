@@ -23,6 +23,7 @@ export const IpcChannels = {
   appsUpdatesAvailable: 'apps:updatesAvailable',
   hostSetAutoLaunch: 'host:setAutoLaunch',
   hostGetAutoLaunch: 'host:getAutoLaunch',
+  hostInfo: 'host:info',
   authSetToken: 'auth:setToken',
   authClearToken: 'auth:clearToken',
 } as const;
@@ -344,3 +345,32 @@ export type HostSetAutoLaunchReqT = z.infer<typeof HostSetAutoLaunchReq>;
 export type HostSetAutoLaunchResT = z.infer<typeof HostSetAutoLaunchRes>;
 export type HostGetAutoLaunchReqT = z.infer<typeof HostGetAutoLaunchReq>;
 export type HostGetAutoLaunchResT = z.infer<typeof HostGetAutoLaunchRes>;
+
+// ---------------------------------------------------------------------------
+// Host info (renderer header banner: "Connected to Linux server: my-host")
+// ---------------------------------------------------------------------------
+
+export const HostInfoReq = z.object({});
+export const HostInfoRes = z.discriminatedUnion('ok', [
+  z.object({
+    ok: z.literal(true),
+    /** 'win32' | 'darwin' | 'linux' | 'freebsd' | etc. */
+    platform: z.string(),
+    /** 'Windows 11' | 'macOS Sonoma' | 'Ubuntu 24.04' | … — best-effort prose. */
+    osLabel: z.string(),
+    /** os.hostname(). Renderer renders this prominently in headless mode. */
+    hostname: z.string(),
+    /** Linux only: parsed /etc/os-release ID / VERSION_ID when present. */
+    distro: z.string().nullable(),
+    /** True iff the host was launched with `--headless` — renderer uses this to decide whether to render the "remote" banner. */
+    headless: z.boolean(),
+    /** Host semver (matches HOST_VERSION). */
+    hostVersion: z.string(),
+    /** Architecture: 'x64' | 'arm64' | … */
+    arch: z.string(),
+  }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+]);
+
+export type HostInfoReqT = z.infer<typeof HostInfoReq>;
+export type HostInfoResT = z.infer<typeof HostInfoRes>;

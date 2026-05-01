@@ -35,6 +35,7 @@ import {
 } from './ipc/handlers/apps-update';
 import { disposeTray, installTray, notifyUpdateReady, resolveTrayIconPath } from './tray';
 import { getAutoLaunch, setAutoLaunch, wasLaunchedHidden } from './auto-launch';
+import { buildHostInfo } from './host-info';
 import {
   isHeadlessMode,
   resolveHeadlessBind,
@@ -1158,6 +1159,14 @@ async function main(): Promise<void> {
       process.platform === 'darwin' ||
       process.platform === 'linux';
     return { ok: true, enabled: getAutoLaunch(), supported };
+  });
+  ipcMain.handle(IpcChannels.hostInfo, () => {
+    try {
+      const info = buildHostInfo({ headless, hostVersion: HOST_VERSION });
+      return { ok: true, ...info };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
   });
 
   app.on('second-instance', () => {

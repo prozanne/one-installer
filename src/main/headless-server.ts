@@ -89,6 +89,41 @@ type ServerFrame =
   | { kind: 'event'; channel: string; payload: unknown };
 
 /**
+ * Ring buffer of recent events for the HTTP long-poll fallback. WebSocket
+ * clients receive events live via subscribe(); HTTP-only clients read
+ * `/api/events?since=N` and get every event with seq > N from the buffer.
+ *
+ * Capacity 256 covers a normal install's progress events (≤30 Hz × few
+ * seconds). Older entries are dropped — clients that fall too far behind
+ * lose events but the buffer never blows up.
+ */
+const EVENT_RING_CAPACITY = 256;
+interface RingEntry {
+  seq: number;
+  channel: string;
+  payload: unknown;
+}
+interface EventRing {
+  entries: RingEntry[];
+  seq: number;
+  waiters: Set<() => void>;
+}
+function makeRing(): EventRing {
+  return { entries: [], seq: 0, waiters: new Set() };
+}
+function recordEvent(ring: EventRing, channel: string, payload: unknown): void {
+  ring.seq++;
+  ring.entries.push({ seq: ring.seq, channel, payload });
+  while (ring.entries.length > EVENT_RING_CAPACITY) ring.entries.shift();
+  for (const w of ring.waiters) w();
+  ring.waiters.clear();
+}
+function eventsSince(ring: EventRing, since: number): RingEntry[] {
+  // Linear scan — fine for capacity 256.
+  return ring.entries.filter((e) => e.seq > since);
+}
+
+/**
  * Generate a 256-bit URL-safe token. Used for WS auth + static-asset
  * cookie bootstrap. Constant-time compared on every WS upgrade.
  */
@@ -146,8 +181,21 @@ function mimeFor(p: string): string {
 export function startHeadlessServer(opts: HeadlessServerOpts): HeadlessServerHandle {
   const token = opts.token ?? generateToken();
   const bind = opts.bindAddress ?? '127.0.0.1';
+  const ring = makeRing();
 
-  const httpServer = createServer((req, res) => handleHttpRequest(req, res, opts, token));
+  // Pipe every event the bridge surfaces into this server's ring buffer.
+  // WebSocket subscribers still get them live via the bridge.subscribe
+  // path; the ring is purely so HTTP-only clients can long-poll.
+  // Each server instance owns its own ring so multiple test instances
+  // don't share state.
+  const ringCleanup: Array<() => void> = [];
+  for (const ch of HTTP_FALLBACK_CHANNELS) {
+    ringCleanup.push(opts.bridge.subscribe(ch, (payload) => recordEvent(ring, ch, payload)));
+  }
+
+  const httpServer = createServer((req, res) =>
+    handleHttpRequest(req, res, opts, token, ring),
+  );
 
   const wss = new WebSocketServer({ noServer: true });
 
@@ -179,16 +227,32 @@ export function startHeadlessServer(opts: HeadlessServerOpts): HeadlessServerHan
     httpServer,
     async stop() {
       for (const ws of clients) ws.close();
+      for (const u of ringCleanup) u();
+      // Wake any blocked long-pollers so they return without leaking.
+      for (const w of ring.waiters) w();
+      ring.waiters.clear();
       await new Promise<void>((resolve) => httpServer.close(() => resolve()));
     },
   };
 }
+
+/**
+ * Channels the HTTP ring buffer mirrors. Kept narrow on purpose — only
+ * the broadcast events the renderer subscribes to. RPC results travel
+ * through the synchronous POST /api/rpc and never hit the ring.
+ */
+const HTTP_FALLBACK_CHANNELS = [
+  'install:progress',
+  'update:available',
+  'apps:updatesAvailable',
+] as const;
 
 function handleHttpRequest(
   req: IncomingMessage,
   res: ServerResponse,
   opts: HeadlessServerOpts,
   token: string,
+  ring: EventRing,
 ): void {
   // Token gate: present in `?token=` query string (first hit) or in the
   // Cookie. The renderer's transport bootstrap stashes the token into
@@ -203,6 +267,19 @@ function handleHttpRequest(
     res.statusCode = 401;
     res.setHeader('content-type', 'text/plain; charset=utf-8');
     res.end('unauthorized — append ?token=… to the URL or send X-VDX-Token header');
+    return;
+  }
+
+  // HTTP fallback transport. Used when the user's network gateway strips
+  // WebSocket upgrades (corporate HTTP-only proxies, some load balancers,
+  // a few VPN gateways). The browser-side transport tries WS first and
+  // falls back to these endpoints if the upgrade fails.
+  if (req.method === 'POST' && url.pathname === '/api/rpc') {
+    handleHttpRpc(req, res, opts);
+    return;
+  }
+  if (req.method === 'GET' && url.pathname === '/api/events') {
+    handleHttpEvents(req, res, url, ring);
     return;
   }
 
@@ -236,6 +313,106 @@ function handleHttpRequest(
     "default-src 'self'; connect-src 'self' ws:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:",
   );
   createReadStream(filePath).pipe(res);
+}
+
+/**
+ * POST /api/rpc body = { id?, channel, payload } → 200 { result } | 500 { error }.
+ * Synchronous: one request per RPC, no multiplexing. Used by the browser's
+ * HTTP fallback transport when WebSocket isn't reachable through the
+ * network path.
+ */
+function handleHttpRpc(req: IncomingMessage, res: ServerResponse, opts: HeadlessServerOpts): void {
+  let body = '';
+  req.on('data', (chunk: Buffer) => {
+    body += chunk.toString('utf-8');
+    // Defensive cap — the manifest schema is small but a misbehaving
+    // proxy could send us multi-MB payloads. 1 MiB is plenty.
+    if (body.length > 1024 * 1024) {
+      res.statusCode = 413;
+      res.end('payload too large');
+      req.destroy();
+    }
+  });
+  req.on('end', async () => {
+    if (res.writableEnded) return;
+    let parsed: { channel?: string; payload?: unknown };
+    try {
+      parsed = JSON.parse(body) as { channel?: string; payload?: unknown };
+    } catch {
+      res.statusCode = 400;
+      res.end('invalid json');
+      return;
+    }
+    if (typeof parsed.channel !== 'string') {
+      res.statusCode = 400;
+      res.end('missing channel');
+      return;
+    }
+    try {
+      const result = await opts.bridge.invoke(parsed.channel, parsed.payload);
+      res.statusCode = 200;
+      res.setHeader('content-type', 'application/json; charset=utf-8');
+      res.end(JSON.stringify({ result }));
+    } catch (e) {
+      res.statusCode = 200; // not 500 — errors are normal RPC outcomes
+      res.setHeader('content-type', 'application/json; charset=utf-8');
+      res.end(JSON.stringify({ error: (e as Error).message }));
+    }
+  });
+}
+
+/**
+ * GET /api/events?since=N&timeout=30000 — long-poll for events past `since`.
+ *
+ * Behaviour:
+ *  - If events past `since` already exist, return them immediately.
+ *  - Otherwise wait up to `timeout` ms for new events. Return whatever
+ *    accumulates, or an empty list on timeout.
+ *
+ * Response: { events: [{ seq, channel, payload }], last: highestSeq }.
+ * Client persists `last` and uses it as `since` for the next poll.
+ */
+function handleHttpEvents(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  ring: EventRing,
+): void {
+  const since = Number(url.searchParams.get('since') ?? '0');
+  const timeoutMs = Math.min(Number(url.searchParams.get('timeout') ?? '30000'), 60_000);
+  const respond = () => {
+    if (res.writableEnded) return;
+    const events = eventsSince(ring, since);
+    const last = events.length > 0 ? events[events.length - 1]!.seq : since;
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json; charset=utf-8');
+    // Disable client-side caching — every poll must hit the server.
+    res.setHeader('cache-control', 'no-store');
+    res.end(JSON.stringify({ events, last }));
+  };
+  if (eventsSince(ring, since).length > 0) {
+    respond();
+    return;
+  }
+  // Block until something happens or the timeout fires.
+  let resolved = false;
+  const onTick = () => {
+    if (resolved) return;
+    resolved = true;
+    ring.waiters.delete(waiter);
+    clearTimeout(timer);
+    respond();
+  };
+  const waiter = onTick;
+  ring.waiters.add(waiter);
+  const timer = setTimeout(onTick, timeoutMs);
+  // If the client disconnects, drop the waiter so we don't leak.
+  req.on('close', () => {
+    if (resolved) return;
+    resolved = true;
+    ring.waiters.delete(waiter);
+    clearTimeout(timer);
+  });
 }
 
 function bindWsClient(ws: WebSocket, bridge: IpcBridge, onClose: () => void): void {

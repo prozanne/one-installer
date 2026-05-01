@@ -296,6 +296,98 @@ describe('startHeadlessServer — WebSocket bridge', () => {
   });
 });
 
+describe('HTTP fallback transport', () => {
+  it('POST /api/rpc round-trips through the bridge', async () => {
+    const port = await freePort();
+    const bridge = makeBridge({
+      invoke: async (channel, payload) =>
+        channel === 'echo' ? { received: payload } : null,
+    });
+    server = startHeadlessServer({ port, rendererDir, bridge, token: 'tok' });
+    const res = await fetch(`http://127.0.0.1:${port}/api/rpc`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-vdx-token': 'tok' },
+      body: JSON.stringify({ channel: 'echo', payload: { x: 1 } }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { result: { received: { x: number } } };
+    expect(body.result.received.x).toBe(1);
+  });
+
+  it('POST /api/rpc returns { error } on handler throw (200, not 500)', async () => {
+    const port = await freePort();
+    const bridge = makeBridge({
+      invoke: async () => {
+        throw new Error('handler boom');
+      },
+    });
+    server = startHeadlessServer({ port, rendererDir, bridge, token: 'tok' });
+    const res = await fetch(`http://127.0.0.1:${port}/api/rpc`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-vdx-token': 'tok' },
+      body: JSON.stringify({ channel: 'fail', payload: null }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toMatch(/handler boom/);
+  });
+
+  it('POST /api/rpc rejects invalid JSON with 400', async () => {
+    const port = await freePort();
+    server = startHeadlessServer({ port, rendererDir, bridge: makeBridge({}), token: 'tok' });
+    const res = await fetch(`http://127.0.0.1:${port}/api/rpc`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-vdx-token': 'tok' },
+      body: '{not json',
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /api/rpc requires token', async () => {
+    const port = await freePort();
+    server = startHeadlessServer({ port, rendererDir, bridge: makeBridge({}), token: 'tok' });
+    const res = await fetch(`http://127.0.0.1:${port}/api/rpc`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ channel: 'x', payload: null }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it('GET /api/events long-polls and returns events past `since`', async () => {
+    const port = await freePort();
+    const bridge = makeBridge({});
+    server = startHeadlessServer({ port, rendererDir, bridge, token: 'tok' });
+
+    setTimeout(() => bridge.emit('install:progress', { percent: 10 }), 50);
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/events?since=0&timeout=2000`, {
+      headers: { 'x-vdx-token': 'tok' },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      events: { seq: number; channel: string; payload: { percent: number } }[];
+      last: number;
+    };
+    expect(body.events.length).toBeGreaterThanOrEqual(1);
+    expect(body.events[0]!.channel).toBe('install:progress');
+    expect(body.events[0]!.payload.percent).toBe(10);
+    expect(body.last).toBe(body.events[body.events.length - 1]!.seq);
+  });
+
+  it('GET /api/events returns empty list on timeout', async () => {
+    const port = await freePort();
+    server = startHeadlessServer({ port, rendererDir, bridge: makeBridge({}), token: 'tok' });
+    const res = await fetch(`http://127.0.0.1:${port}/api/events?since=0&timeout=300`, {
+      headers: { 'x-vdx-token': 'tok' },
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { events: unknown[]; last: number };
+    expect(body.events).toEqual([]);
+    expect(body.last).toBe(0);
+  });
+});
+
 describe('CLI flag helpers', () => {
   it('isHeadlessMode detects --headless', () => {
     expect(isHeadlessMode(['node', 'app.js'])).toBe(false);
