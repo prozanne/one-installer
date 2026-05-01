@@ -26,8 +26,14 @@ export async function atomicWriteJson(
   await fsP.writeFile(tmp, json);
   try {
     await fsP.copyFile(path, bak);
-  } catch {
-    // no existing — ignore
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    // ENOENT is expected on the very first write (no prior `path` to back
+    // up). Any other error means the source file exists but couldn't be
+    // copied — that's a real I/O fault we should not silently swallow:
+    // proceeding with the rename would discard the only good copy. Throw
+    // so the caller surfaces the failure instead of writing on top.
+    if (code !== 'ENOENT') throw e;
   }
   try {
     await fsP.rename(tmp, path);

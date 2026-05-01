@@ -38,6 +38,12 @@ export function createInstalledStore(
 
   let lastStatus: ReadStatus | null = null;
 
+  // Promise queue serialising `update()` so two concurrent callers can't
+  // race read → mutate → write and lose one mutation. Each new update is
+  // chained onto the previous one's settled state. `read()` stays free to
+  // run in parallel — it doesn't mutate.
+  let updateQueue: Promise<unknown> = Promise.resolve();
+
   const store: InstalledStore = {
     async read() {
       const { value, status } = await readJsonWithBakFallback<unknown>(
@@ -67,12 +73,22 @@ export function createInstalledStore(
       lastStatus = 'default';
       return InstalledStateSchema.parse(defaults());
     },
-    async update(mut) {
-      const cur = await store.read();
-      mut(cur);
-      const validated = InstalledStateSchema.parse(cur);
-      await atomicWriteJson(filePath, validated, fs);
-      return validated;
+    update(mut) {
+      // Queue this update behind any in-flight one. We always read fresh
+      // disk state inside the chained closure so we never operate on a
+      // stale baseline from a sibling update that hasn't finished yet.
+      const next = updateQueue.then(async () => {
+        const cur = await store.read();
+        mut(cur);
+        const validated = InstalledStateSchema.parse(cur);
+        await atomicWriteJson(filePath, validated, fs);
+        return validated;
+      });
+      // Swallow any rejection on the queue chain itself so a single failing
+      // update doesn't poison every subsequent caller. The error still
+      // propagates to *this* caller via the returned promise.
+      updateQueue = next.catch(() => undefined);
+      return next;
     },
     lastReadStatus() {
       return lastStatus;

@@ -5,6 +5,33 @@ const Localized = z.object({ default: z.string() }).catchall(z.string());
 const Sha256Tagged = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const Sha256Plain = z.string().regex(/^[a-f0-9]{64}$/);
 
+/** Reject NUL + other C0 controls. Win32 string handling truncates at NUL,
+ *  silently turning a registry valueName into "" (the `(Default)` slot) and
+ *  splitting REG_MULTI_SZ entries mid-string. Apply to every manifest string
+ *  that flows into reg.exe / shortcut filenames / shell args.
+ *  The control-character class *is* the point of this check — disable the
+ *  lint rule that flags raw control chars in regexes. */
+// eslint-disable-next-line no-control-regex
+const NoControlChars = z.string().refine((s) => !/[\x00-\x1f\x7f]/.test(s), {
+  message: 'Control characters are not allowed in this field',
+});
+
+/** Filename-safe charset for shortcut.name and similar fields that become
+ *  literal disk filenames. No path separators, no NUL/controls, no leading/
+ *  trailing whitespace, length-bounded so a malicious manifest can't escape
+ *  the start-menu directory or create a path that exceeds NTFS limits. */
+const FilenameSafe = z
+  .string()
+  .min(1)
+  .max(120)
+  // eslint-disable-next-line no-control-regex
+  .refine((s) => !/[\x00-\x1f\x7f/\\:*?"<>|]/.test(s), {
+    message: 'Field contains characters not allowed in filenames',
+  })
+  .refine((s) => s.trim() === s, {
+    message: 'Leading or trailing whitespace is not allowed',
+  });
+
 const LicenseStep = z.object({
   type: z.literal('license'),
   id: z.string().min(1),
@@ -70,22 +97,36 @@ export const WizardStep = z.discriminatedUnion('type', [
 const ShortcutAction = z.object({
   type: z.literal('shortcut'),
   where: z.enum(['desktop', 'startMenu', 'programs']),
-  target: z.string(),
-  name: z.string(),
-  args: z.string().optional(),
+  target: NoControlChars,
+  // FilenameSafe — shortcut name lands on disk as `${dir}/${name}.lnk`. Without
+  // this constraint a manifest could publish `name = "../../evil"` and write
+  // a .lnk outside the StartMenu/Desktop directory.
+  name: FilenameSafe,
+  args: NoControlChars.optional(),
   when: z.string().optional(),
 });
 
 const RegistryValue = z.object({
   type: z.enum(['REG_SZ', 'REG_DWORD', 'REG_QWORD', 'REG_EXPAND_SZ', 'REG_MULTI_SZ', 'REG_BINARY']),
-  data: z.union([z.string(), z.number(), z.array(z.string())]),
+  // Reject NUL/control bytes in REG_SZ-style strings — Win32 truncates at NUL,
+  // and a NUL inside a REG_MULTI_SZ entry would split it mid-string. Number
+  // and array forms are recursively constrained.
+  data: z.union([
+    NoControlChars,
+    z.number(),
+    z.array(NoControlChars),
+  ]),
 });
 
 const RegistryAction = z.object({
   type: z.literal('registry'),
   hive: z.enum(['HKCU', 'HKLM']),
-  key: z.string(),
-  values: z.record(z.string(), RegistryValue),
+  // Registry key path: forbid control bytes, but allow `\` (Windows separator).
+  key: NoControlChars,
+  // Value names must not contain NUL — Win32 truncates and silently overwrites
+  // the (Default) slot. Empty key = `(Default)` is intentional in some flows;
+  // we keep min:0 but bar control bytes.
+  values: z.record(NoControlChars, RegistryValue),
   when: z.string().optional(),
 });
 
@@ -123,7 +164,9 @@ export const ManifestSchema = z.object({
   id: z.string().regex(APP_ID_REGEX),
   name: Localized,
   version: z.string().regex(SEMVER_REGEX),
-  publisher: z.string().min(1),
+  // publisher flows into ARP `Publisher` REG_SZ; reject NUL so it can't mask
+  // its own entry in Add/Remove Programs.
+  publisher: NoControlChars.refine((s) => s.length >= 1, { message: 'publisher required' }),
   description: Localized,
   icon: z.string().optional(),
   screenshots: z.array(z.string()).max(4).optional(),
@@ -173,7 +216,7 @@ export const ManifestSchema = z.object({
     removeEnvPath: z.boolean().default(true),
     preExec: z.array(ExecAction).optional(),
   }),
-});
+}).strict();
 
 export type Manifest = z.infer<typeof ManifestSchema>;
 export type WizardStepT = z.infer<typeof WizardStep>;

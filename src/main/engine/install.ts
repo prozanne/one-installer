@@ -10,6 +10,7 @@ import { renderTemplate } from './template';
 import { evaluateWhen } from './when-expr';
 import { arpRegister, arpDeregister } from './post-install/arp';
 import { orderedForRollback, type TransactionRunner } from './transaction';
+import { validateAnswer } from './wizard';
 import { ok, err, type Result } from '@shared/types';
 
 export interface InstallInput {
@@ -68,8 +69,42 @@ function isInstallPathPermitted(
 
 export async function runInstall(input: InstallInput): Promise<Result<InstallSuccess, string>> {
   const scope = input.scope ?? input.manifest.installScope.default;
-  const sysVars = input.platform.systemVars();
+
+  // Enforce that the requested scope is one this manifest declares it
+  // supports. Without this gate, a caller asking for `machine` install of a
+  // user-only app (or vice versa) would silently proceed, route to the wrong
+  // hive (HKLM vs HKCU) and produce an uninstallable mess.
+  if (!input.manifest.installScope.supports.includes(scope)) {
+    return err(
+      `Scope '${scope}' is not in manifest.installScope.supports [${input.manifest.installScope.supports.join(', ')}]`,
+    );
+  }
+
+  // Validate every wizard answer against its declared step *in the main
+  // process*, not just the renderer. The renderer is treated as untrusted —
+  // a compromised renderer could submit shapes that flow through
+  // `renderTemplate` into installPath / registry / exec arg slots. Each
+  // answer must pass `validateAnswer` for its declared step.
   const ctx = { ...input.wizardAnswers } as Record<string, unknown>;
+  for (const step of input.manifest.wizard) {
+    if (step.type === 'summary') continue;
+    const id = step.id;
+    if (!(id in ctx)) {
+      // Step omitted from answers — let the engine fall back to defaults
+      // for path/text/checkbox; require explicit answer for license/select.
+      if (step.type === 'license' || step.type === 'select') {
+        return err(`Wizard answer missing for required step '${id}'`);
+      }
+      continue;
+    }
+    const validated = validateAnswer(step, ctx[id]);
+    if (!validated.ok) {
+      return err(`Wizard answer for '${id}' is invalid: ${validated.error}`);
+    }
+    ctx[id] = validated.value;
+  }
+
+  const sysVars = input.platform.systemVars();
   const installPath = String(
     ctx.installPath ?? `${sysVars.LocalAppData}/Programs/Samsung/${input.manifest.id}`,
   );

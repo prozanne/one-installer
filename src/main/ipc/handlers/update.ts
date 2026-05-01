@@ -22,6 +22,7 @@ import {
   SELF_UPDATE_APP_ID,
 } from '@main/updater';
 import { fetchManifestVerified } from '@main/catalog';
+import { ipcError, ipcErrorMessage } from '@main/ipc/error';
 
 export interface UpdateHandlerDeps {
   packageSource: PackageSource;
@@ -55,7 +56,7 @@ export async function handleUpdateCheck(
     });
     return { ok: true, info };
   } catch (e) {
-    return { ok: false, error: (e as Error).message };
+    return ipcError(e);
   }
 }
 
@@ -91,7 +92,7 @@ export async function handleUpdateRun(
         { trustRoots: await deps.getTrustRoots() },
       );
     } catch (e) {
-      return { ok: false, error: `Update manifest verify failed: ${(e as Error).message}` };
+      return { ok: false, error: `Update manifest verify failed: ${ipcErrorMessage(e)}` };
     }
 
     const destPath = join(deps.cacheDir, `vdx-installer-${info.latestVersion}.staged`);
@@ -105,6 +106,6 @@ export async function handleUpdateRun(
     // then the staged file just sits in cache; nothing relaunches.
     return { ok: true };
   } catch (e) {
-    return { ok: false, error: (e as Error).message };
+    return ipcError(e);
   }
 }

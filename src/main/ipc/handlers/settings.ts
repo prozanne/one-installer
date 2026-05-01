@@ -12,6 +12,7 @@ import {
   type SettingsSetResT,
 } from '@shared/ipc-types';
 import type { InstalledStore } from '@main/state/installed-store';
+import { ipcError } from '@main/ipc/error';
 
 export interface SettingsHandlerDeps {
   installedStore: InstalledStore;
@@ -27,7 +28,7 @@ export async function handleSettingsGet(
     const state = await deps.installedStore.read();
     return { ok: true, settings: state.settings };
   } catch (e) {
-    return { ok: false, error: (e as Error).message };
+    return ipcError(e);
   }
 }
 
@@ -43,6 +44,6 @@ export async function handleSettingsSet(
     });
     return { ok: true, settings: updated.settings };
   } catch (e) {
-    return { ok: false, error: (e as Error).message };
+    return ipcError(e);
   }
 }

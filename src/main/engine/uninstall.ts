@@ -5,8 +5,8 @@ import { acquireAppLock } from '@main/state/lock';
 import { inverseAction } from './post-install';
 import { arpDeregister } from './post-install/arp';
 import { renderTemplate } from './template';
+import { orderedForRollback, type TransactionRunner } from './transaction';
 import { ok, err, type Result } from '@shared/types';
-import type { TransactionRunner } from './transaction';
 
 export interface UninstallInput {
   manifest: Manifest;
@@ -17,6 +17,13 @@ export interface UninstallInput {
   scope: 'user' | 'machine';
   /** Same lock directory used by `runInstall`. See InstallInput.lockDir. */
   lockDir: string;
+  /**
+   * Wizard answers from the original install. The manifest's
+   * `uninstall.removePaths` may template variables beyond `{{installPath}}`
+   * (e.g. `{{installPath}}/{{cacheSize}}`); the spec promises that those are
+   * resolvable. Pass-through from the InstalledApp record.
+   */
+  wizardAnswers?: Record<string, unknown>;
 }
 
 export async function runUninstall(input: UninstallInput): Promise<Result<true, string>> {
@@ -36,13 +43,18 @@ export async function runUninstall(input: UninstallInput): Promise<Result<true, 
   });
 
   try {
-    for (const entry of [...input.journalEntries].reverse()) {
+    // Iterate by descending stepOrdinal — defends against an externally
+    // mutated journal whose `steps` array order doesn't match the order
+    // entries were applied. Same defensive sort `runInstall` uses.
+    for (const entry of orderedForRollback(input.journalEntries)) {
       if (entry.type === 'arp') await arpDeregister(entry, input.platform);
       else await inverseAction(entry, input.platform);
       await tx.append(entry);
     }
 
-    const ctx = { installPath: input.installPath };
+    // Spec §3.4 says wizard answers are referenceable in uninstall paths.
+    // Honor that by merging them into the template context.
+    const ctx = { ...(input.wizardAnswers ?? {}), installPath: input.installPath };
     for (const p of input.manifest.uninstall.removePaths) {
       const path = renderTemplate(p, ctx, input.platform.systemVars());
       try {

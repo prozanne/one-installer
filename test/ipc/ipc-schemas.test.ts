@@ -31,6 +31,10 @@ import {
   UpdateCheckRes,
   UpdateRunReq,
   UpdateRunRes,
+  AuthSetTokenReq,
+  AuthSetTokenRes,
+  AuthClearTokenReq,
+  AuthClearTokenRes,
 } from '@shared/ipc-types';
 
 // ---------------------------------------------------------------------------
@@ -666,5 +670,62 @@ describe('UpdateRunRes', () => {
 
   it('rejects ok:false without error', () => {
     expect(() => UpdateRunRes.parse({ ok: false })).toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 15. Auth IPC schemas (Rule 9)
+// ---------------------------------------------------------------------------
+
+describe('AuthSetTokenReq', () => {
+  it('accepts a non-empty token within bounds', () => {
+    const result = AuthSetTokenReq.parse({ token: 'ghp_abc123' });
+    expect(result.token).toBe('ghp_abc123');
+  });
+
+  it('rejects empty string', () => {
+    expect(() => AuthSetTokenReq.parse({ token: '' })).toThrow();
+  });
+
+  it('rejects oversized tokens (>256 chars)', () => {
+    expect(() => AuthSetTokenReq.parse({ token: 'x'.repeat(257) })).toThrow();
+  });
+
+  it('rejects missing token field', () => {
+    expect(() => AuthSetTokenReq.parse({})).toThrow();
+  });
+});
+
+describe('AuthSetTokenRes', () => {
+  it('accepts ok:true (no token echoed back per design)', () => {
+    const result = AuthSetTokenRes.parse({ ok: true });
+    expect(result.ok).toBe(true);
+  });
+
+  it('strips a token field if a buggy main were to send one', () => {
+    // The Res schema must not have a `token` field — verify by stripping.
+    const result = AuthSetTokenRes.parse({ ok: true, token: 'leak' });
+    expect((result as Record<string, unknown>)['token']).toBeUndefined();
+  });
+
+  it('accepts ok:false branch', () => {
+    const result = AuthSetTokenRes.parse({ ok: false, error: 'no keychain' });
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe('AuthClearTokenReq', () => {
+  it('accepts empty object', () => {
+    expect(AuthClearTokenReq.parse({})).toEqual({});
+  });
+});
+
+describe('AuthClearTokenRes', () => {
+  it('accepts ok:true', () => {
+    expect(AuthClearTokenRes.parse({ ok: true }).ok).toBe(true);
+  });
+
+  it('accepts ok:false with error', () => {
+    expect(AuthClearTokenRes.parse({ ok: false, error: 'denied' }).ok).toBe(false);
   });
 });

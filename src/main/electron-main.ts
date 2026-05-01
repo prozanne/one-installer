@@ -29,6 +29,7 @@ import { handleSettingsGet, handleSettingsSet } from './ipc/handlers/settings';
 import { handleUpdateCheck, handleUpdateRun } from './ipc/handlers/update';
 import { handleDiagExport, handleDiagOpenLogs } from './ipc/handlers/diag';
 import { handleAuthSetToken, handleAuthClearToken } from './ipc/handlers/auth';
+import { ipcError, ipcErrorMessage } from './ipc/error';
 import {
   IpcChannels,
   SideloadOpenReq,
@@ -124,6 +125,16 @@ interface CatalogCacheEntry {
 // `agentCatalog`). Both share the disk cache so cold-start tab opens are
 // instant.
 const catalogCacheEntries: Map<CatalogKindT, CatalogCacheEntry> = new Map();
+
+/**
+ * In-flight fetches per kind. A user spam-clicking refresh launches
+ * overlapping handlers; without this dedup, response B (newer fetch) can
+ * complete first and write to the cache, then response A (older fetch,
+ * server lag) lands later and clobbers the cache back to a stale state —
+ * including a stale ETag that primes the next conditional GET wrong.
+ * Concurrent calls now share the first in-flight promise.
+ */
+const catalogInflight: Map<CatalogKindT, Promise<CatalogFetchResT>> = new Map();
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -291,6 +302,24 @@ async function main(): Promise<void> {
   const platform = new MockPlatform();
   const runner = createTransactionRunner({ journal: journalStore });
 
+  // Sweep stale journal entries from prior crashes. These are transactions
+  // that were `pending` / `extracting` / etc. when the process died. We
+  // surface them through the log so support bundles capture the orphan;
+  // automatic rollback would need the original installPath + platform
+  // context, which we don't have, so it's deferred to a Phase 1.2 UI flow
+  // that asks the user before discarding work.
+  try {
+    const orphans = await runner.recoverPending();
+    if (orphans.length > 0) {
+      console.warn(
+        `[vdx] recoverPending: ${orphans.length} pending transaction(s) from prior crash; surface via UI in Phase 1.2`,
+        orphans.map((t) => ({ txid: t.txid, appId: t.appId, status: t.status })),
+      );
+    }
+  } catch (e) {
+    console.error('[vdx] recoverPending failed:', (e as Error).message);
+  }
+
   // Disk-backed catalog cache. Hydrated synchronously here so the very first
   // catalog:fetch IPC after launch can short-circuit on the cached body even
   // if the network is slow or down — the agents tab paints instantly with
@@ -436,7 +465,7 @@ async function main(): Promise<void> {
         sessionId,
       };
     } catch (e) {
-      return { ok: false, error: (e as Error).message };
+      return ipcError(e);
     }
   });
 
@@ -483,7 +512,7 @@ async function main(): Promise<void> {
       emitProgress({ phase: 'done', message: 'Installed', percent: 100 });
       return { ok: true, installPath: installRes.value.installPath };
     } catch (e) {
-      const msg = (e as Error).message;
+      const msg = ipcErrorMessage(e);
       emitProgress({ phase: 'error', message: msg });
       return { ok: false, error: msg };
     } finally {
@@ -504,7 +533,21 @@ async function main(): Promise<void> {
       return { ok: false, error: 'invalid request', sourceUrl: null };
     }
     const kind = parsed.data.kind;
+    // De-dup concurrent fetches of the same kind. Any caller arriving while
+    // a fetch is in flight awaits the first one's result instead of issuing
+    // its own request that could race.
+    const existing = catalogInflight.get(kind);
+    if (existing) return existing;
+    const work = doCatalogFetch(kind);
+    catalogInflight.set(kind, work);
+    try {
+      return await work;
+    } finally {
+      catalogInflight.delete(kind);
+    }
+  });
 
+  async function doCatalogFetch(kind: CatalogKindT): Promise<CatalogFetchResT> {
     if (kind === 'agent') {
       if (!config.agentCatalog) {
         return {
@@ -609,9 +652,9 @@ async function main(): Promise<void> {
         sourceUrl: packageSource.displayName,
       };
     } catch (e) {
-      return { ok: false, error: (e as Error).message, sourceUrl: packageSource.displayName };
+      return { ok: false, error: ipcErrorMessage(e), sourceUrl: packageSource.displayName };
     }
-  });
+  }
 
   // -----------------------------------------------------------------------
   // catalog:install — R2 implementation using PackageSource + fetchManifestVerified
@@ -686,6 +729,24 @@ async function main(): Promise<void> {
         const parseRes = await parseVdxpkg(pkgRes.value, await getTrustRoots());
         if (!parseRes.ok) return { ok: false, error: parseRes.error };
 
+        // Bind the click on "install <item.id>" to the manifest's claim of
+        // identity. A tampered (but signed-by-a-trusted-publisher) catalog
+        // entry could swap `packageUrl` to a different signed app — the
+        // inner manifest sig would still verify but the user installed the
+        // wrong thing. Refuse if id or version disagree.
+        if (parseRes.value.manifest.id !== item.id) {
+          return {
+            ok: false,
+            error: `Catalog/manifest id mismatch: catalog says '${item.id}', manifest says '${parseRes.value.manifest.id}'`,
+          };
+        }
+        if (item.latestVersion && parseRes.value.manifest.version !== item.latestVersion) {
+          return {
+            ok: false,
+            error: `Catalog/manifest version mismatch: catalog says '${item.latestVersion}', manifest says '${parseRes.value.manifest.version}'`,
+          };
+        }
+
         evictOldestSideloadSession();
         const sessionId = randomUUID();
         sideloadSessions.set(sessionId, {
@@ -713,7 +774,23 @@ async function main(): Promise<void> {
           trustRoots,
         });
       } catch (e) {
-        return { ok: false, error: `Manifest fetch failed: ${(e as Error).message}` };
+        return { ok: false, error: `Manifest fetch failed: ${ipcErrorMessage(e)}` };
+      }
+      // Same id/version binding check as the agent path. The fetch URL is
+      // bound to (item.id, version), but the manifest body itself is just
+      // bytes — defensively verify the body's own claims match the URL
+      // coordinates so a misconfigured source can't substitute.
+      if (manifest.id !== item.id) {
+        return {
+          ok: false,
+          error: `Catalog/manifest id mismatch: catalog says '${item.id}', manifest says '${manifest.id}'`,
+        };
+      }
+      if (manifest.version !== version) {
+        return {
+          ok: false,
+          error: `Catalog/manifest version mismatch: requested '${version}', manifest says '${manifest.version}'`,
+        };
       }
 
       // Stream payload into a Buffer for parseVdxpkg compatibility.
@@ -747,7 +824,7 @@ async function main(): Promise<void> {
           });
         }
       } catch (e) {
-        return { ok: false, error: `Payload fetch failed: ${(e as Error).message}` };
+        return { ok: false, error: `Payload fetch failed: ${ipcErrorMessage(e)}` };
       }
       emitProgress({
         phase: 'verify',
@@ -785,7 +862,7 @@ async function main(): Promise<void> {
         kind: parsed.data.kind,
       };
     } catch (e) {
-      return { ok: false, error: (e as Error).message };
+      return ipcError(e);
     } finally {
       endTransaction();
     }
@@ -807,6 +884,7 @@ async function main(): Promise<void> {
         runner,
         scope: app2.installScope,
         lockDir: paths.locksDir,
+        wizardAnswers: app2.wizardAnswers,
       });
       if (!res.ok) return { ok: false, error: res.error };
       await installedStore.update((s) => {
@@ -814,7 +892,7 @@ async function main(): Promise<void> {
       });
       return { ok: true };
     } catch (e) {
-      return { ok: false, error: (e as Error).message };
+      return ipcError(e);
     } finally {
       endTransaction();
     }

@@ -57,6 +57,7 @@ export const CatalogSchema = z
      */
     apps: z.array(CatalogItem),
   })
+  .strict()
   .refine(
     (c) => c.apps.every((a) => a.packageUrl || a.repo),
     { message: 'Each catalog item must specify either packageUrl or repo' },

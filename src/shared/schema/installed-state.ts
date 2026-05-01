@@ -42,7 +42,7 @@ export const InstalledStateSchema = z.object({
   lastCatalogSync: z.string().datetime().nullable(),
   settings: Settings,
   apps: z.record(z.string(), InstalledApp),
-});
+}).strict();
 
 export type InstalledStateT = z.infer<typeof InstalledStateSchema>;
 export type InstalledAppT = z.infer<typeof InstalledApp>;

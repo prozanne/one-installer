@@ -32,6 +32,16 @@ import type {
 
 const exec = promisify(execFile);
 
+/**
+ * Timeout for any non-`exec`-action PowerShell call (createShortcut,
+ * broadcastEnvChange, diskFreeBytes). PowerShell COM activation under
+ * aggressive AV (Defender ASR, CrowdStrike) can hang for tens of seconds
+ * or indefinitely; without a timeout the caller hangs forever. 30s is
+ * generous for first-run AOT compilation of `Add-Type` snippets and tight
+ * for everything else.
+ */
+const PS_TIMEOUT_MS = 30_000;
+
 interface WindowsPlatformOptions {
   /**
    * If true, allow HKLM writes / Program Files. The renderer only requests
@@ -130,12 +140,18 @@ export class WindowsPlatform implements Platform {
   async diskFreeBytes(driveLetter: string): Promise<bigint> {
     try {
       const drive = driveLetter.replace(/[:\\/]+$/, '').toUpperCase();
-      const { stdout } = await exec('powershell.exe', [
-        '-NoProfile',
-        '-NonInteractive',
-        '-Command',
-        `(Get-PSDrive -Name ${drive} -PSProvider FileSystem).Free`,
-      ]);
+      const { stdout } = await exec(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-Command',
+          `(Get-PSDrive -Name ${drive} -PSProvider FileSystem).Free`,
+        ],
+        { timeout: PS_TIMEOUT_MS },
+      );
       return BigInt(stdout.trim());
     } catch {
       return 1n << 60n;
@@ -156,7 +172,11 @@ export class WindowsPlatform implements Platform {
     ]
       .filter(Boolean)
       .join('; ');
-    await exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps]);
+    await exec(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', ps],
+      { timeout: PS_TIMEOUT_MS },
+    );
   }
 
   async deleteShortcut(path: string): Promise<void> {
@@ -291,7 +311,11 @@ export class WindowsPlatform implements Platform {
         '$result = [uintptr]::Zero',
         '$type::SendMessageTimeout($HWND_BROADCAST, $WM_SETTINGCHANGE, [intptr]::Zero, "Environment", 2, 5000, [ref]$result) | Out-Null',
       ].join('; ');
-      await exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps]);
+      await exec(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', ps],
+        { timeout: PS_TIMEOUT_MS },
+      );
     } catch {
       /* best-effort */
     }
@@ -397,7 +421,16 @@ function stdoutToString(v: unknown): string {
  * never raw user input.
  */
 function psQuote(s: string): string {
-  return `'${s.replace(/'/g, "''")}'`;
+  // Strip CR / LF / TAB before quoting. PowerShell single-quoted strings span
+  // newlines literally, but our PS scripts join statements with `; ` into a
+  // single `-Command` argument; a literal newline inside a quoted operand can
+  // confuse cmdline tokenization on some PS hosts and changes how `; `
+  // separators are interpreted. Manifest schema's NoControlChars constraint
+  // already rejects these for shortcut.target/args/etc, so this is belt-and-
+  // suspenders for whatever future caller sneaks past the schema.
+  // eslint-disable-next-line no-control-regex
+  const cleaned = s.replace(/[\r\n\t\x00-\x08\x0b\x0c\x0e-\x1f]/g, '');
+  return `'${cleaned.replace(/'/g, "''")}'`;
 }
 
 /**

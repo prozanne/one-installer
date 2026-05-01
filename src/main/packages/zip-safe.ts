@@ -93,15 +93,26 @@ function openZip(buf: Buffer): Promise<ZipFile> {
 export async function listZipEntries(buf: Buffer): Promise<string[]> {
   const zip = await openZip(buf);
   const out: string[] = [];
-  return new Promise((resolve, reject) => {
-    zip.on('entry', (e: Entry) => {
-      out.push(e.fileName);
+  try {
+    return await new Promise<string[]>((resolve, reject) => {
+      zip.on('entry', (e: Entry) => {
+        out.push(e.fileName);
+        zip.readEntry();
+      });
+      zip.on('end', () => resolve(out));
+      zip.on('error', reject);
       zip.readEntry();
     });
-    zip.on('end', () => resolve(out));
-    zip.on('error', reject);
-    zip.readEntry();
-  });
+  } finally {
+    // yauzl holds an FD on the underlying source until close. Even
+    // fromBuffer mode allocates inflate streams + listeners — release them
+    // on the rejection path too, not just success.
+    try {
+      zip.close();
+    } catch {
+      /* already closed by `end` */
+    }
+  }
 }
 
 export async function extractZipSafe(input: ExtractInput): Promise<ExtractResult> {
@@ -111,56 +122,73 @@ export async function extractZipSafe(input: ExtractInput): Promise<ExtractResult
   const out: string[] = [];
   let totalBytes = 0;
 
-  await new Promise<void>((resolve, reject) => {
-    zip.on('entry', (e: Entry) => {
-      try {
-        // Defend against zip-bomb manifests: enforce the cap on the declared
-        // uncompressedSize *before* we begin streaming an entry, so a single
-        // multi-TB entry doesn't fill the disk before we notice.
-        if (totalBytes + e.uncompressedSize > maxTotal) {
-          throw new Error(
-            `Refusing zip: total uncompressed bytes would exceed cap (${maxTotal} bytes)`,
-          );
-        }
-        // Detect symlinks via external file attributes (POSIX file type 0xA000).
-        const externalAttr = (e.externalFileAttributes ?? 0) >>> 16;
-        const fileType = externalAttr & 0xf000;
-        if (fileType === 0xa000) {
-          throw new Error(`Refusing symlink entry: ${e.fileName}`);
-        }
-        if (/\/$/.test(e.fileName)) {
-          fs.promises
-            .mkdir(path.join(input.destDir, e.fileName), { recursive: true })
-            .then(() => zip.readEntry())
-            .catch(reject);
-          return;
-        }
-        checkEntryName(e.fileName);
-        const dest = path.join(input.destDir, e.fileName);
-        zip.openReadStream(e, (err, rs) => {
-          if (err || !rs) return reject(err);
-          fs.promises
-            .mkdir(path.dirname(dest), { recursive: true })
-            .then(() => {
-              const ws = (fs as IFs).createWriteStream(dest);
-              rs.pipe(ws);
-              ws.on('finish', () => {
-                out.push(e.fileName);
-                totalBytes += e.uncompressedSize;
-                zip.readEntry();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      zip.on('entry', (e: Entry) => {
+        try {
+          // Defend against zip-bomb manifests: enforce the cap on the declared
+          // uncompressedSize *before* we begin streaming an entry, so a single
+          // multi-TB entry doesn't fill the disk before we notice.
+          if (totalBytes + e.uncompressedSize > maxTotal) {
+            throw new Error(
+              `Refusing zip: total uncompressed bytes would exceed cap (${maxTotal} bytes)`,
+            );
+          }
+          // Detect symlinks via external file attributes (POSIX file type 0xA000).
+          const externalAttr = (e.externalFileAttributes ?? 0) >>> 16;
+          const fileType = externalAttr & 0xf000;
+          if (fileType === 0xa000) {
+            throw new Error(`Refusing symlink entry: ${e.fileName}`);
+          }
+          if (/\/$/.test(e.fileName)) {
+            fs.promises
+              .mkdir(path.join(input.destDir, e.fileName), { recursive: true })
+              .then(() => zip.readEntry())
+              .catch(reject);
+            return;
+          }
+          checkEntryName(e.fileName);
+          const dest = path.join(input.destDir, e.fileName);
+          zip.openReadStream(e, (err, rs) => {
+            if (err || !rs) return reject(err);
+            fs.promises
+              .mkdir(path.dirname(dest), { recursive: true })
+              .then(() => {
+                const ws = (fs as IFs).createWriteStream(dest);
+                rs.pipe(ws);
+                ws.on('finish', () => {
+                  out.push(e.fileName);
+                  totalBytes += e.uncompressedSize;
+                  zip.readEntry();
+                });
+                ws.on('error', (e2) => {
+                  rs.destroy();
+                  reject(e2);
+                });
+              })
+              .catch((e2) => {
+                rs.destroy();
+                reject(e2);
               });
-              ws.on('error', reject);
-            })
-            .catch(reject);
-        });
-      } catch (err) {
-        reject(err);
-      }
+          });
+        } catch (err) {
+          reject(err);
+        }
+      });
+      zip.on('end', () => resolve());
+      zip.on('error', reject);
+      zip.readEntry();
     });
-    zip.on('end', () => resolve());
-    zip.on('error', reject);
-    zip.readEntry();
-  });
+  } finally {
+    // Always release the yauzl handle, on success and on error. yauzl
+    // holds inflate streams + listeners + (in fd mode) an OS file handle
+    // until close().
+    try {
+      zip.close();
+    } catch {
+      /* already closed */
+    }
+  }
 
   return { files: out, totalBytes };
 }

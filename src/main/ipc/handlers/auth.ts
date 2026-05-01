@@ -16,6 +16,7 @@ import {
   type AuthSetTokenResT,
   type AuthClearTokenResT,
 } from '@shared/ipc-types';
+import { ipcError } from '@main/ipc/error';
 
 export interface SafeStorageLike {
   isEncryptionAvailable(): boolean;
@@ -51,7 +52,7 @@ export async function handleAuthSetToken(
     deps.fs.writeFileSync(deps.authStorePath, encrypted, { mode: 0o600 });
     return { ok: true };
   } catch (e) {
-    return { ok: false, error: (e as Error).message };
+    return ipcError(e);
   }
 }
 
@@ -65,6 +66,6 @@ export async function handleAuthClearToken(
     if (deps.fs.existsSync(deps.authStorePath)) deps.fs.unlinkSync(deps.authStorePath);
     return { ok: true };
   } catch (e) {
-    return { ok: false, error: (e as Error).message };
+    return ipcError(e);
   }
 }

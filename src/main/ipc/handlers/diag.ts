@@ -16,6 +16,7 @@ import {
   type DiagExportResT,
   type DiagOpenLogsResT,
 } from '@shared/ipc-types';
+import { ipcError } from '@main/ipc/error';
 
 /**
  * The slice of Electron's `shell` we need. Defining it here lets tests pass
@@ -69,7 +70,7 @@ export async function handleDiagExport(
     deps.shell.showItemInFolder(archivePath);
     return { ok: true };
   } catch (e) {
-    return { ok: false, error: (e as Error).message };
+    return ipcError(e);
   }
 }
 
@@ -83,6 +84,6 @@ export async function handleDiagOpenLogs(
     await deps.shell.openPath(deps.paths.logsDir);
     return { ok: true };
   } catch (e) {
-    return { ok: false, error: (e as Error).message };
+    return ipcError(e);
   }
 }
