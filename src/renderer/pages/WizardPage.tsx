@@ -106,6 +106,7 @@ export function WizardPage() {
     await window.vdxIpc.installRun({
       sessionId: sideload.sessionId,
       wizardAnswers,
+      kind: sideload.kind ?? 'app',
     });
   }
 

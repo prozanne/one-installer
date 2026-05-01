@@ -29,12 +29,20 @@ export function App() {
               `px-3 py-2 rounded-md ${isActive ? 'bg-white shadow-sm' : 'hover:bg-white/60'}`
             }
           >
-            Home
+            Apps
+          </NavLink>
+          <NavLink
+            to="/agents"
+            className={({ isActive }) =>
+              `px-3 py-2 rounded-md ${isActive ? 'bg-white shadow-sm' : 'hover:bg-white/60'}`
+            }
+          >
+            Agents
           </NavLink>
         </nav>
         <div className="mt-auto text-xs text-black/40">
           <div className="font-mono">v0.1.0-dev</div>
-          <div>dev mode (sideload)</div>
+          <div>dev mode</div>
         </div>
       </aside>
       <main className="flex-1 overflow-auto p-8">

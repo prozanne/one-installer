@@ -3,7 +3,18 @@
 **Date:** 2026-05-01
 **Status:** Draft v1
 **Scope:** Extension to `2026-05-01-vdx-installer-design.md`. Defines a clean abstraction layer so the archive backend (GitHub, HTTP mirror, local filesystem) is swappable via a single config file without rebuilding the installer.
-**Does NOT modify** the main design spec. All additions are additive.
+
+**Relationship to the main design.** Most additions here are additive (new files under `src/main/source/`, new config schema). However, the following decisions in this spec **supersede** earlier choices in the main design and should land alongside Phase 2:
+
+| Topic | Earlier (main design) | This spec |
+|---|---|---|
+| Catalog URL | Raw branch blob (`raw.githubusercontent.com/.../main/catalog.json`) | Tagged Release asset (§3.1) |
+| Trust model | Single embedded Ed25519 key | Embedded key ∪ optional `trustRoots` (additive only — §4.6 T1) |
+| `developerMode` | Single per-user `installed.json.settings.developerMode` toggle | Policy ceiling in `vdx.config.json` AND user opt-in in `installed.json.settings`; both required (§4.2 + §4.6 T8) |
+| PAT keychain account name | `vdx-installer:github` | `service: 'vdx-installer', account: 'github-pat'` (§3.1) |
+| `installed.json.source` enum | `'catalog' \| 'sideload'` | Adds optional `installed.json.sourceBackend` (§5.1.1) |
+
+These are flagged here so the design-spec owner can reconcile in one merge rather than discovering drift during implementation.
 
 ---
 
@@ -62,69 +73,108 @@ export interface ManifestFetchResult {
   sig: Uint8Array;
 }
 
-/** Discriminated-union error type for all source operations. */
-export type SourceError =
-  | NetworkError
-  | NotFoundError
-  | AuthError
-  | RateLimitError
-  | InvalidResponseError;
+/**
+ * Base class for every error thrown by a PackageSource implementation.
+ * Concrete subclasses each carry a string-literal `kind` discriminator so
+ * callers can switch exhaustively. Using real Error subclasses (rather than
+ * an internal-tag pattern) keeps `instanceof`, `Error.cause`, and stack-trace
+ * inspection working through IPC and telemetry boundaries.
+ *
+ * Every constructor MUST run any user-controlled string (URL, path, token,
+ * response body) through `redact.ts` before passing it as `message` so that
+ * the resulting Error is safe to log, serialise, or include in a crash dump
+ * without further sanitisation. (See §4.5.)
+ */
+export abstract class SourceError extends Error {
+  abstract readonly kind:
+    | 'NetworkError'
+    | 'NotFoundError'
+    | 'AuthError'
+    | 'RateLimitError'
+    | 'IoError'
+    | 'InvalidResponseError';
+  abstract readonly retryable: boolean;
 
-export interface NetworkError {
-  kind: 'NetworkError';
-  message: string;
-  cause?: unknown;
-  retryable: true;
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = new.target.name;
+  }
 }
 
-export interface NotFoundError {
-  kind: 'NotFoundError';
-  message: string;
-  /** e.g. the URL or path that was not found */
-  resource: string;
-  retryable: false;
+export class NetworkError extends SourceError {
+  readonly kind = 'NetworkError' as const;
+  readonly retryable = true as const;
+  constructor(message: string, opts?: { cause?: unknown }) {
+    super(message, opts);
+  }
 }
 
-export interface AuthError {
-  kind: 'AuthError';
-  message: string;
-  /** true if a token exists but is rejected; false if no token was provided */
-  tokenPresent: boolean;
-  retryable: false;
+export class NotFoundError extends SourceError {
+  readonly kind = 'NotFoundError' as const;
+  readonly retryable = false as const;
+  /** e.g. the URL or path that was not found (already redacted). */
+  readonly resource: string;
+  constructor(message: string, resource: string, opts?: { cause?: unknown }) {
+    super(message, opts);
+    this.resource = resource;
+  }
 }
 
-export interface RateLimitError {
-  kind: 'RateLimitError';
-  message: string;
-  /** Unix epoch ms when the rate limit resets; undefined if not available */
-  resetAt?: number;
-  retryable: true;
+export class AuthError extends SourceError {
+  readonly kind = 'AuthError' as const;
+  readonly retryable = false as const;
+  /** true if a token exists but is rejected; false if no token was provided. */
+  readonly tokenPresent: boolean;
+  constructor(message: string, tokenPresent: boolean, opts?: { cause?: unknown }) {
+    super(message, opts);
+    this.tokenPresent = tokenPresent;
+  }
 }
 
-export interface InvalidResponseError {
-  kind: 'InvalidResponseError';
-  message: string;
-  /** HTTP status code, if applicable */
-  statusCode?: number;
-  retryable: false;
+export class RateLimitError extends SourceError {
+  readonly kind = 'RateLimitError' as const;
+  readonly retryable = true as const;
+  /** Unix epoch ms when the rate limit resets; undefined if not available. */
+  readonly resetAt?: number;
+  constructor(message: string, resetAt?: number, opts?: { cause?: unknown }) {
+    super(message, opts);
+    this.resetAt = resetAt;
+  }
 }
 
-/** Factory helper to build a SourceError and throw it. */
-export function throwSourceError(e: SourceError): never {
-  const err = new Error(e.message);
-  (err as unknown as Record<string, unknown>)['sourceError'] = e;
-  throw err;
+/**
+ * Local I/O failure that is NOT a transient network condition (EACCES, EIO,
+ * EPERM, EBUSY on a local volume, etc.). Distinct from NetworkError so that
+ * the consumer's retry policy does not loop on a permission / hardware fault.
+ */
+export class IoError extends SourceError {
+  readonly kind = 'IoError' as const;
+  readonly retryable = false as const;
+  /** Underlying errno code if available (e.g. 'EACCES', 'EIO'). */
+  readonly code?: string;
+  constructor(message: string, code?: string, opts?: { cause?: unknown }) {
+    super(message, opts);
+    this.code = code;
+  }
 }
 
-/** Type-guard to extract a SourceError from a caught value. */
-export function isSourceError(e: unknown): e is Error & { sourceError: SourceError } {
-  if (!(e instanceof Error)) return false;
-  const tagged = (e as Record<string, unknown>)['sourceError'];
-  // `typeof null === 'object'` so the `!== null` check is required to keep the
-  // narrowed `sourceError: SourceError` (non-null) type honest.
-  if (tagged === null || typeof tagged !== 'object') return false;
-  // Cheap shape check: every SourceError variant has a string `kind`.
-  return typeof (tagged as Record<string, unknown>)['kind'] === 'string';
+export class InvalidResponseError extends SourceError {
+  readonly kind = 'InvalidResponseError' as const;
+  readonly retryable = false as const;
+  /** HTTP status code, if applicable. */
+  readonly statusCode?: number;
+  constructor(message: string, statusCode?: number, opts?: { cause?: unknown }) {
+    super(message, opts);
+    this.statusCode = statusCode;
+  }
+}
+
+/**
+ * Type-guard. Replaces the older `isSourceError`/`throwSourceError` helpers,
+ * which leaked an out-of-band `sourceError` property on a generic Error.
+ */
+export function isSourceError(e: unknown): e is SourceError {
+  return e instanceof SourceError;
 }
 ```
 
@@ -186,14 +236,24 @@ export interface PackageSource {
    * Stream the payload.zip for a specific app version.
    *
    * Yields chunks of raw bytes in order. The caller accumulates or pipes
-   * them. The caller is responsible for sha256 verification after streaming.
+   * them. The caller is responsible for sha256 verification after streaming
+   * (per §4.6 T4).
+   *
+   * Synchronous-throw contract: `fetchPayload` itself returns synchronously.
+   * Argument-validation failures (path-traversal in `appId`/`version`,
+   * `range.start >= range.end`, etc.) MAY throw at the call site as a
+   * `SourceError` subclass. All I/O failures (connection refused, 404, hash
+   * tag check, EACCES on a share, abort) surface from the FIRST `next()`
+   * call of the iterator, never from the function call itself. This is
+   * intentional so a caller can `try { iter = source.fetchPayload(...) }`
+   * to validate args, then start the actual stream inside `for await`.
    *
    * @param opts.range  If provided, fetch only [start, end) bytes (for resume).
    *                    Implementations that do not support Range MUST throw
-   *                    an InvalidResponseError rather than silently ignoring.
-   * @param opts.signal  AbortSignal for cancellation.
-   *
-   * Throws SourceError on failure.
+   *                    an InvalidResponseError from the first iteration rather
+   *                    than silently ignoring.
+   * @param opts.signal  AbortSignal for cancellation. On abort, the iterator's
+   *                    cleanup MUST delete any `.partial` file (§4.6 T7).
    */
   fetchPayload(
     appId: string,
@@ -245,6 +305,8 @@ export interface PackageSource {
 
 These sections define the constructor signature, config shape, and behavioral contract for each implementation. Code bodies are deferred to Phase 2.
 
+**TLS vs signature integrity (NORMATIVE).** None of the network sources rely on TLS for content integrity. TLS provides only (a) confidentiality on the wire and (b) server-identity authentication against the OS trust store. **The signature scheme described in §4.6 is the SOLE integrity guarantee.** This is a deliberate consequence of supporting corporate proxies with custom CA bundles (per main design §6.5): a corporate MITM proxy may legitimately decrypt and re-encrypt traffic, so any catalog/manifest tampering must be caught by the Ed25519 signature, not by TLS. Implementations MUST NOT rely on TLS-level integrity checks (e.g. certificate pinning) as a substitute for signature verification.
+
 ### 3.1. `GitHubReleasesSource`
 
 **File:** `src/main/source/github-releases-source.ts`
@@ -265,8 +327,20 @@ export interface GitHubReleasesConfig {
 
   /**
    * GitHub organization or owner prefix for app repos.
-   * App repo name is inferred as `${appsOrg}/${appId.split('.').at(-1)}`.
-   * Override via catalog app entry's `repo` field.
+   *
+   * Default inference rule:
+   *   appRepo = `${appsOrg}/${slugify(appId.split('.').at(-1)!)}`
+   * where slugify lowercases and matches the result against
+   * `^[a-z0-9][a-z0-9._-]{0,99}$`. If the slug fails that check, no inferred
+   * repo name is produced and the catalog MUST supply an explicit override.
+   *
+   * Override mechanism: each catalog entry MAY contain an explicit `repo`
+   * field of the form `"owner/name"`. When present, the override is used
+   * verbatim (no slugification). The catalog schema lives in the data-model
+   * spec; this spec only defines how `GitHubReleasesSource` consumes it.
+   *
+   * Inferred repos that 404 produce a `NotFoundError`; the operator should
+   * either rename the GitHub repo to match, or set the catalog override.
    */
   appsOrg: string;
 
@@ -308,8 +382,16 @@ export declare class GitHubReleasesSource implements PackageSource {
 | Asset | Same release → asset by name |
 | Versions | `GET ${apiBase}/repos/${appRepo}/releases` (paginated) → filter by channel tag |
 
+**Note on the catalog URL — supersedes main design §4.1.** The main design previously sketched the catalog at `https://raw.githubusercontent.com/samsung/vdx-catalog/main/catalog.json` (a branch-tip raw blob). This spec adopts the **Releases-asset** model instead: catalogs are versioned, atomic, separately-signed assets attached to a tagged release, fetched through `${apiBase}/repos/...`. The Releases model gives us (a) atomic publish (raw blob can be torn during a push), (b) a place to attach the detached `.sig`, (c) a stable URL even if the default branch is renamed, and (d) free CDN caching. Phase 2 implementers MUST NOT keep the raw blob URL as a fallback. The main design's §4.1 is updated alongside Phase 2 work.
+
 **PAT management:**
-- Stored in OS keychain via `keytar` under service name `"vdx-installer"`, account `"github-pat"`.
+- Stored in OS keychain via `keytar` under service name `"vdx-installer"`, account `"github-pat"`. (Main design §9.3 previously named the keytar target `"vdx-installer:github"` — the `service: 'vdx-installer'` + `account: 'github-pat'` form here is canonical and supersedes that note. The Phase 2 implementer is responsible for proposing the matching update to the design spec.)
+- Required PAT scope: **`contents:read` only**, on specific repositories (not user-wide). Fine-grained PATs are strongly preferred over classic PATs for least-privilege and short-lived credentials. The host MUST log `warn` if the configured PAT cannot read the catalog repo's release assets but reads succeed for unrelated paths (suggests over-broad scope).
+- Keychain ACL:
+  - **macOS**: the keychain item's access-list MUST be set so only the signed `vdx-installer.app` bundle (matching the host's code-signing identity) can read it without prompt. Other apps under the same user account get an unlock prompt or an error.
+  - **Windows**: Credential Manager isolates only per-user, not per-process. The spec acknowledges that same-user malware can read the credential. Mitigation is policy: prefer fine-grained PATs scoped to the catalog/installer repos, with a 90-day max lifetime documented in the operator runbook.
+  - **Linux** (when supported): use libsecret with the secret-tool schema's `applicationId` attribute and document the same threat as Windows.
+- `keytar`-unavailable fallback: the host MUST refuse to authenticate (no PAT, fall back to unauthenticated access at 60 req/h) and emit `warn`. It MUST NOT silently fall back to reading a PAT from a file or environment variable — that would lower the bar for accidental disclosure.
 - Never logged; `redact.ts` strips GitHub tokens of every published shape (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, and fine-grained `github_pat_*`) from any string before writing to log. The redactor uses a single regex covering all prefixes; adding a new prefix is a one-line change.
 - If token refresh is needed (OAuth app flow), that is Phase 3+ scope.
 
@@ -373,10 +455,24 @@ export declare class HttpMirrorSource implements PackageSource {
   - `RateLimitError`: wait until `resetAt` if known (capped at 60 s); otherwise fall back to exponential backoff. Retrying before `resetAt` would just hit 429 again, so the resetAt value is preferred over a generic backoff.
 - Timeout: configurable per-request; default 30 s for manifests/assets, no global timeout for payload stream (the engine controls this via AbortSignal).
 - HTTP 404 → `NotFoundError`.
-- HTTP 401 / 403 → `AuthError`.
-- HTTP 429 → `RateLimitError` with `resetAt` parsed from `Retry-After`.
+- HTTP 401 → `AuthError(tokenPresent: <token configured?>)`.
+- HTTP 403 →
+  - if `Retry-After` is present, OR `X-RateLimit-Remaining: 0` is present, OR `Retry-After` parses to a future time → `RateLimitError(resetAt)` (mirrors of GitHub-Enterprise-style backends use 403 for rate-limit).
+  - otherwise → `AuthError(tokenPresent: <token configured?>)`.
+- HTTP 429 → `RateLimitError` with `resetAt` parsed from `Retry-After` (HTTP-date or delta-seconds).
 - HTTP 5xx → `NetworkError` (retryable).
-- Any non-JSON body where JSON expected → `InvalidResponseError`.
+- Any non-JSON body where JSON expected → `InvalidResponseError(statusCode)`.
+
+**Proxy precedence (NORMATIVE):**
+
+When constructing a request, the proxy is selected by the first matching rule:
+
+1. `HttpMirrorConfig.proxyUrl` is set on this source → use it (per-source override).
+2. `vdx.config.json`'s top-level `proxy.kind === 'explicit'` → use `proxy.url`.
+3. `proxy.kind === 'none'` → bypass all proxies (direct connect).
+4. `proxy.kind === 'system'` (or `proxy` field absent) → resolve via OS proxy settings at connect time.
+
+`HttpMirrorConfig.proxyUrl` and `proxy.url` MUST use the `https://` or `socks5://` scheme. Plain `http://` proxies are rejected with `ConfigError` because credentials and auth headers would be visible in cleartext to the proxy operator regardless of the upstream TLS — this is enforced at config-load time, not request time.
 
 ### 3.3. `LocalFsSource`
 
@@ -404,8 +500,27 @@ export interface LocalFsConfig {
   /**
    * Optional: inject a custom `fs` implementation (defaults to node:fs/promises).
    * Injecting `memfs` makes this source fully in-memory — used in all engine tests.
+   *
+   * The type is the narrow subset of `node:fs/promises` that LocalFsSource
+   * actually calls. Using a structural subset avoids forcing memfs (which
+   * does not implement the entire fs/promises surface, e.g. `glob`, `cp`)
+   * to require a TS cast at every test call site.
    */
-  fs?: typeof import('node:fs/promises');
+  fs?: LocalFsApi;
+}
+
+/** Methods of `node:fs/promises` that `LocalFsSource` calls. */
+export interface LocalFsApi {
+  access(path: string): Promise<void>;
+  readFile(path: string): Promise<Buffer>;
+  readdir(path: string): Promise<string[]>;
+  stat(path: string): Promise<{ size: number; mtimeMs: number }>;
+  open(path: string, flags: string): Promise<LocalFsHandle>;
+}
+
+export interface LocalFsHandle {
+  read(buffer: Uint8Array, offset: number, length: number, position: number): Promise<{ bytesRead: number }>;
+  close(): Promise<void>;
 }
 
 /**
@@ -423,9 +538,18 @@ export declare class LocalFsSource implements PackageSource {
 }
 ```
 
-**Behavioral contract:**
-- ENOENT → `NotFoundError`.
-- Other fs errors → `NetworkError` (retryable: true, so callers can retry on transient share disconnects).
+**Behavioral contract — fs error mapping:**
+
+| Errno | `SourceError` kind | retryable | Rationale |
+|---|---|---|---|
+| `ENOENT` | `NotFoundError` | false | File missing — callers handle as not-yet-published. |
+| `EACCES` / `EPERM` | `AuthError(tokenPresent: false)` | false | Permission denied — retrying never helps and can mask a deliberate access change. |
+| `EIO` | `InvalidResponseError` | false | Disk/share corruption — fail fast so the caller surfaces a real fault. |
+| `ENOTDIR` / `ELOOP` | `InvalidResponseError` | false | Path shape is wrong — a retry cannot fix it. |
+| `ENOTCONN` / `EHOSTUNREACH` / `ENETUNREACH` / `ETIMEDOUT` | `NetworkError` | true | UNC share disconnects — retry policy applies. |
+| `EBUSY` / `EAGAIN` | `IoError(code)` | false | Resource lock — surface to user; do not silently retry. |
+| Anything else | `IoError(code)` | false | Unknown errno — fail closed; never auto-retry on an error we don't classify. |
+
 - `fetchPayload` with `range` uses `fs.open` + `read` to seek to `range.start` and yield only the requested bytes.
 - ETag: computed as `"${mtimeMs}-${size}"` on catalog.json; stored and compared to detect catalog freshness.
 - Atomic visibility: on network shares, partial writes by the publisher may result in a torn file. `LocalFsSource` does not have an out-of-band size hint to compare against (`versions.json` carries semver strings only — see §3.2). The contract is therefore: **callers must verify sha256 after every payload fetch** (which they already do per the `PackageSource` contract in §2.2), and catalog/manifest readers must verify the Ed25519 signature; a torn file fails one of these checks and surfaces as `InvalidResponseError`. Publishers SHOULD write to a temp file and rename atomically; this is documented as an operator guideline rather than enforced by `LocalFsSource`.
@@ -508,8 +632,24 @@ A real `vdx.config.json` populates **exactly one** of `github`, `httpMirror`, or
   // Disable telemetry entirely (overrides user setting).
   "telemetry": false,
 
-  // Developer mode: allow installing manifests without a valid signature.
-  // MUST NOT be true in production-distributed configs.
+  // Developer mode policy override (operator-level, not user-level).
+  //
+  // This is a policy ceiling, not the user-toggleable setting. The main
+  // design spec defines a per-user `developerMode` field in
+  // `installed.json.settings` (toggleable from Settings UI). The two
+  // interact as follows:
+  //
+  //   effective = policy_developerMode AND user_developerMode
+  //
+  // i.e. the policy MUST permit it, AND the user MUST also opt in. A config
+  // with `"developerMode": true` raises the ceiling but does not turn on
+  // unsigned-install behaviour by itself; the user still has to flip the
+  // Settings toggle. A config with `"developerMode": false` (the default)
+  // forces the user toggle to read-only off.
+  //
+  // §4.6 T8 additionally requires a debug-build product code OR
+  // VDX_DEV_MODE=1 in env for the policy ceiling to take effect at all on a
+  // production-signed binary.
   "developerMode": false
 }
 ```
@@ -716,6 +856,17 @@ Concretely: every engine function that consumes a manifest or payload accepts **
 - A `PackageSource` instance + coordinates (appId + version) via dependency injection.
 
 The `PackageSource` dependency injection point is the **engine façade** (`src/main/engine.ts` — renamed from `src/main/index.ts` in Phase 1.1), not the inner engine functions. Inner functions (`runInstall`, `runUninstall`, `validateManifestSemantics`, etc.) never see a `PackageSource`.
+
+### 5.1.1. `installed.json.source` enum extension (NORMATIVE)
+
+The main design defines `installed.json.source ∈ {'catalog', 'sideload'}`. To distinguish installs sourced from a `LocalFsSource` mirror (a non-network "catalog" via the abstraction defined here) from network catalog installs, Phase 2 extends this enum:
+
+| Value | Meaning |
+|---|---|
+| `'sideload'` | User dropped a `.vdxpkg` directly. Bypasses the source abstraction entirely. |
+| `'catalog'` | Installed via the `PackageSource` abstraction over the active source backend. Implementations record the backend in a separate `installed.json.sourceBackend` field: `'github' \| 'http-mirror' \| 'local-fs'` (matching `PackageSource.id`). |
+
+Adding `sourceBackend` is additive (new optional field on existing entries; older entries default to `null` and the host displays "unknown" in Settings → About). This avoids a hard schema migration while preserving the `'catalog' | 'sideload'` distinction used throughout the design spec.
 
 ### 5.2. Engine surface that depends on this abstraction
 
@@ -945,7 +1096,12 @@ export const CONFIG_DEFAULTS = {
 };
 ```
 
-**Enforcement rule for reviewers:** Run `grep -r "samsung/vdx-catalog\|api.github.com\|samsung/vdx-installer" src/` as part of the PR checklist. The only allowed match is `src/main/source/config-defaults.ts`. Any other match is a blocking defect.
+**Enforcement rule for reviewers (CODE-only, not docs).** Run `grep -rn --include='*.ts' --include='*.tsx' "samsung/vdx-catalog\|api.github.com\|samsung/vdx-installer" src/` as part of the PR checklist. The only allowed match in `src/` is `src/main/source/config-defaults.ts`. Any other match in source code is a blocking defect.
+
+The rule does NOT apply to:
+- Documentation under `docs/` (the main design uses these strings as working placeholders).
+- Tests under `test/` that reference the defaults to verify the source-resolution path.
+- `package.json` and CI configuration (which legitimately reference the installer's own repo for self-update).
 
 ### 6.3. `createSource` factory
 

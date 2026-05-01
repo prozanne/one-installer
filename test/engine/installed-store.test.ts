@@ -105,6 +105,7 @@ describe('installed-store', () => {
         updateChannel: 'stable',
         autoUpdate: 'ask',
         source: 'sideload',
+        kind: 'app',
       };
     });
     const s2 = await store.read();

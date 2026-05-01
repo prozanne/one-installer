@@ -27,6 +27,13 @@ const InstalledApp = z.object({
   updateChannel: z.enum(['stable', 'beta', 'internal']),
   autoUpdate: z.enum(['auto', 'ask', 'manual']),
   source: z.enum(['catalog', 'sideload']).default('catalog'),
+  /**
+   * Which catalog this entry belongs to. Used purely for grouping in the
+   * UI's tabs (Apps / Agents). Defaults to 'app' so existing installations
+   * recorded before this field existed continue to surface under the Apps
+   * tab without a migration step.
+   */
+  kind: z.enum(['app', 'agent']).default('app'),
 });
 
 export const InstalledStateSchema = z.object({

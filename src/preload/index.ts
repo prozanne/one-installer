@@ -8,6 +8,10 @@ import type {
   UninstallRunReqT,
   UninstallRunResT,
   ProgressEventT,
+  CatalogFetchReqT,
+  CatalogFetchResT,
+  CatalogInstallReqT,
+  CatalogInstallResT,
 } from '@shared/ipc-types';
 
 const ipcApi = {
@@ -25,6 +29,12 @@ const ipcApi = {
   },
   async uninstallRun(req: UninstallRunReqT): Promise<UninstallRunResT> {
     return ipcRenderer.invoke(IpcChannels.uninstallRun, req);
+  },
+  async catalogFetch(req: CatalogFetchReqT): Promise<CatalogFetchResT> {
+    return ipcRenderer.invoke(IpcChannels.catalogFetch, req);
+  },
+  async catalogInstall(req: CatalogInstallReqT): Promise<CatalogInstallResT> {
+    return ipcRenderer.invoke(IpcChannels.catalogInstall, req);
   },
   onProgress(cb: (ev: ProgressEventT) => void): () => void {
     const listener = (_e: IpcRendererEvent, payload: ProgressEventT) => cb(payload);

@@ -15,18 +15,25 @@ import {
   runInstall,
   runUninstall,
 } from './engine';
+import { loadConfig } from './config';
+import { fetchCatalog, fetchPackage } from './catalog-http';
 import {
   IpcChannels,
   SideloadOpenReq,
   InstallRunReq,
   UninstallRunReq,
+  CatalogFetchReq,
+  CatalogInstallReq,
   type SideloadOpenResT,
   type InstallRunResT,
   type UninstallRunResT,
   type AppsListResT,
   type ProgressEventT,
+  type CatalogFetchResT,
+  type CatalogInstallResT,
+  type CatalogKindT,
 } from '@shared/ipc-types';
-import type { Manifest } from '@shared/schema';
+import type { CatalogT, Manifest } from '@shared/schema';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 
@@ -34,8 +41,18 @@ interface SideloadSession {
   manifest: Manifest;
   payloadBytes: Buffer;
   signatureValid: boolean;
+  /** Tag the session so install:run can default the InstalledApp.kind correctly. */
+  kind: CatalogKindT;
 }
 const sideloadSessions = new Map<string, SideloadSession>();
+
+interface CatalogCacheEntry {
+  catalog: CatalogT;
+  signatureValid: boolean;
+  fetchedAt: string;
+  sourceUrl: string;
+}
+const catalogCache = new Map<CatalogKindT, CatalogCacheEntry>();
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -139,6 +156,10 @@ async function main(): Promise<void> {
   const journalStore = createJournalStore(paths.journalDir, nodeFs);
   const platform = new MockPlatform();
   const runner = createTransactionRunner({ journal: journalStore });
+  // Catalog URLs come from vdx.config.json (next to the EXE in production, or
+  // the project root in dev). Defaults are placeholders pointing at the
+  // canonical org names — operators MUST override before shipping.
+  const config = loadConfig([process.cwd(), join(__dirname, '../..')]);
 
   ipcMain.handle(IpcChannels.appsList, async (): Promise<AppsListResT> => {
     const state = await installedStore.read();
@@ -171,6 +192,7 @@ async function main(): Promise<void> {
         manifest: result.value.manifest,
         payloadBytes: result.value.payloadBytes,
         signatureValid: result.value.signatureValid,
+        kind: 'app',
       });
       const sysVars = platform.systemVars();
       const defaultInstallPath = `${sysVars.LocalAppData}/Programs/Samsung/${result.value.manifest.id}`;
@@ -211,6 +233,10 @@ async function main(): Promise<void> {
         return { ok: false, error: installRes.error };
       }
       emitProgress({ phase: 'commit', message: 'Finalizing...', percent: 90 });
+      // The session's `kind` (app vs agent) is the authoritative tag.
+      // Renderer-supplied `parsed.data.kind` is only used as a fallback
+      // when the session was a plain sideload (no catalog provenance).
+      const installedKind = session.kind === 'agent' ? 'agent' : parsed.data.kind;
       await installedStore.update((s) => {
         s.apps[session.manifest.id] = {
           version: session.manifest.version,
@@ -222,7 +248,8 @@ async function main(): Promise<void> {
           installedAt: new Date().toISOString(),
           updateChannel: 'stable',
           autoUpdate: 'ask',
-          source: 'sideload',
+          source: session.kind === 'agent' ? 'catalog' : 'sideload',
+          kind: installedKind,
         };
       });
       emitProgress({ phase: 'done', message: 'Installed', percent: 100 });
@@ -233,6 +260,92 @@ async function main(): Promise<void> {
       return { ok: false, error: msg };
     } finally {
       sideloadSessions.delete(parsed.data.sessionId);
+    }
+  });
+
+  ipcMain.handle(IpcChannels.catalogFetch, async (_e, raw): Promise<CatalogFetchResT> => {
+    const parsed = CatalogFetchReq.safeParse(raw);
+    if (!parsed.success) {
+      return { ok: false, error: 'invalid request', sourceUrl: null };
+    }
+    const target = config.catalogs[parsed.data.kind];
+    try {
+      const result = await fetchCatalog({
+        url: target.url,
+        sigUrl: target.sigUrl,
+        publicKey: await getDevPubKey(),
+        timeoutMs: config.network.timeoutMs,
+        userAgent: config.network.userAgent,
+      });
+      if (!result.ok) return { ok: false, error: result.error, sourceUrl: target.url };
+      catalogCache.set(parsed.data.kind, {
+        catalog: result.value.catalog,
+        signatureValid: result.value.signatureValid,
+        fetchedAt: result.value.fetchedAt,
+        sourceUrl: target.url,
+      });
+      return {
+        ok: true,
+        catalog: result.value.catalog,
+        signatureValid: result.value.signatureValid,
+        fetchedAt: result.value.fetchedAt,
+        sourceUrl: target.url,
+      };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message, sourceUrl: target.url };
+    }
+  });
+
+  ipcMain.handle(IpcChannels.catalogInstall, async (_e, raw): Promise<CatalogInstallResT> => {
+    const parsed = CatalogInstallReq.safeParse(raw);
+    if (!parsed.success) return { ok: false, error: 'invalid request' };
+    const cache = catalogCache.get(parsed.data.kind);
+    if (!cache) {
+      // Force the renderer to refresh first; we refuse to silently re-fetch
+      // here because that path would also need spinner UI feedback that the
+      // current call doesn't have.
+      return { ok: false, error: 'Catalog not loaded yet — refresh the catalog tab first.' };
+    }
+    const item = cache.catalog.apps.find((a) => a.id === parsed.data.appId);
+    if (!item) return { ok: false, error: `Item not in catalog: ${parsed.data.appId}` };
+    if (!item.packageUrl) {
+      // Phase 2 will resolve `repo` via the GitHub Releases API; for now we
+      // require an explicit packageUrl. Return an actionable error so an
+      // operator editing catalog.json knows what to add.
+      return {
+        ok: false,
+        error: `Catalog entry '${item.id}' lacks packageUrl. Add a direct .vdxpkg URL or wait for Phase 2.`,
+      };
+    }
+    sideloadSessions.clear();
+    try {
+      const pkgRes = await fetchPackage({
+        url: item.packageUrl,
+        timeoutMs: config.network.timeoutMs,
+        userAgent: config.network.userAgent,
+      });
+      if (!pkgRes.ok) return { ok: false, error: pkgRes.error };
+      const parseRes = await parseVdxpkg(pkgRes.value, await getDevPubKey());
+      if (!parseRes.ok) return { ok: false, error: parseRes.error };
+      const sessionId = randomUUID();
+      sideloadSessions.set(sessionId, {
+        manifest: parseRes.value.manifest,
+        payloadBytes: parseRes.value.payloadBytes,
+        signatureValid: parseRes.value.signatureValid,
+        kind: parsed.data.kind,
+      });
+      const sysVars = platform.systemVars();
+      const defaultInstallPath = `${sysVars.LocalAppData}/Programs/Samsung/${parseRes.value.manifest.id}`;
+      return {
+        ok: true,
+        manifest: parseRes.value.manifest,
+        defaultInstallPath,
+        signatureValid: parseRes.value.signatureValid,
+        sessionId,
+        kind: parsed.data.kind,
+      };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
     }
   });
 

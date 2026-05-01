@@ -1,0 +1,22 @@
+{
+  "$schema": "./vdx.config.schema.json",
+  "comment": "Copy to vdx.config.json (gitignored) and edit for your environment.",
+  "catalogs": {
+    "app": {
+      "url": "https://samsung.github.io/vdx-catalog/catalog.json",
+      "sigUrl": "https://samsung.github.io/vdx-catalog/catalog.json.sig"
+    },
+    "agent": {
+      "url": "https://samsung.github.io/agent-catalog/catalog.json",
+      "sigUrl": "https://samsung.github.io/agent-catalog/catalog.json.sig"
+    }
+  },
+  "trust": {
+    "comment": "Embedded VDX public key path. If set, overrides the per-user dev key in %APPDATA%/keys.",
+    "publicKeyPath": null
+  },
+  "network": {
+    "timeoutMs": 15000,
+    "userAgent": "vdx-installer/0.1.0"
+  }
+}
