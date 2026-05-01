@@ -34,6 +34,14 @@ import {
   handleAppsUpdateRun,
 } from './ipc/handlers/apps-update';
 import { disposeTray, installTray, notifyUpdateReady, resolveTrayIconPath } from './tray';
+import { getAutoLaunch, setAutoLaunch, wasLaunchedHidden } from './auto-launch';
+import {
+  isHeadlessMode,
+  resolveHeadlessBind,
+  resolveHeadlessPort,
+  startHeadlessServer,
+  type IpcBridge,
+} from './headless-server';
 import { handleDiagExport, handleDiagOpenLogs } from './ipc/handlers/diag';
 import { handleAuthSetToken, handleAuthClearToken } from './ipc/handlers/auth';
 import { handleAppsList } from './ipc/handlers/apps';
@@ -47,6 +55,8 @@ import {
   UninstallRunReq,
   CatalogFetchReq,
   CatalogInstallReq,
+  HostSetAutoLaunchReq,
+  HostGetAutoLaunchReq,
   type SideloadOpenResT,
   type InstallRunResT,
   type UninstallRunResT,
@@ -170,7 +180,11 @@ function createWindow(): void {
   });
 
   mainWindow.once('ready-to-show', () => {
-    mainWindow?.show();
+    // When the OS autostart entry launched us with `--hidden`, stay in
+    // the tray. The user opens the window from the tray menu when they
+    // need it. Keeps the autostart from being a "blink the window for
+    // half a second on every boot" annoyance.
+    if (!wasLaunchedHidden()) mainWindow?.show();
   });
 
   const devUrl = process.env['ELECTRON_RENDERER_URL'];
@@ -244,10 +258,10 @@ function isSafeExternalUrl(raw: string): boolean {
  * itself.
  */
 function sendProgressUnthrottled(ev: ProgressEventT): void {
-  // Scope to mainWindow.webContents.id only — never broadcast to all windows.
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send(IpcChannels.installProgress, ev);
-  }
+  // broadcastEvent fans out to BOTH the BrowserWindow (when present) and
+  // every WebSocket subscriber (in headless mode). It internally checks
+  // mainWindow.isDestroyed before touching webContents.
+  broadcastEvent(IpcChannels.installProgress, ev);
 }
 
 const progressThrottle = createProgressThrottle({
@@ -259,12 +273,67 @@ function emitProgress(ev: ProgressEventT): void {
   progressThrottle.emit(ev);
 }
 
+/**
+ * IPC handler registry — populated by every `ipcMain.handle()` call so
+ * the headless mode's WebSocket bridge can dispatch RPCs through the
+ * exact same handler functions Electron's IPC would.
+ */
+const ipcHandlerRegistry = new Map<
+  string,
+  (event: unknown, payload: unknown) => Promise<unknown> | unknown
+>();
+
+/**
+ * Event bridge for headless WS clients. The three places that send
+ * unsolicited events (`install:progress`, `update:available`,
+ * `apps:updatesAvailable`) call `broadcastEvent` instead of going
+ * straight to webContents — the helper fans out to BOTH the BrowserWindow
+ * (when present) and every WebSocket subscriber (when in headless mode).
+ */
+const eventSubscribers = new Map<string, Set<(payload: unknown) => void>>();
+function subscribeBridge(channel: string, cb: (payload: unknown) => void): () => void {
+  let s = eventSubscribers.get(channel);
+  if (!s) {
+    s = new Set();
+    eventSubscribers.set(channel, s);
+  }
+  s.add(cb);
+  return () => {
+    s!.delete(cb);
+    if (s!.size === 0) eventSubscribers.delete(channel);
+  };
+}
+function broadcastEvent(channel: string, payload: unknown): void {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(channel, payload);
+  }
+  eventSubscribers.get(channel)?.forEach((cb) => cb(payload));
+}
+
 async function main(): Promise<void> {
+  const headless = isHeadlessMode();
+
+  // Single-instance lock applies to the windowed and headless paths
+  // identically — two listeners on the same port would collide with EADDRINUSE
+  // anyway, but the early gate gives a cleaner error.
   const gotLock = app.requestSingleInstanceLock();
   if (!gotLock) {
     app.quit();
     return;
   }
+
+  // Patch ipcMain.handle so every channel registration also lands in the
+  // bridge's invoke registry. Done once before any ipcMain.handle calls.
+  // The patch is benign in windowed mode — Electron still receives the
+  // real registration, just with a side-effect.
+  const origHandle = ipcMain.handle.bind(ipcMain);
+  (ipcMain as unknown as { handle: typeof ipcMain.handle }).handle = ((
+    channel: string,
+    handler: (event: unknown, payload: unknown) => unknown,
+  ) => {
+    ipcHandlerRegistry.set(channel, handler);
+    return origHandle(channel, handler as never);
+  }) as typeof ipcMain.handle;
 
   await app.whenReady();
 
@@ -974,9 +1043,7 @@ async function main(): Promise<void> {
       if (!res.ok || !res.info) return;
       if (res.info.latestVersion === lastAnnouncedVersion) return;
       lastAnnouncedVersion = res.info.latestVersion;
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send(IpcChannels.updateAvailable, res.info);
-      }
+      broadcastEvent(IpcChannels.updateAvailable, res.info);
     } catch {
       // Background poll never raises to the user — they will discover it
       // on the next manual click.
@@ -1038,11 +1105,7 @@ async function main(): Promise<void> {
       );
       if (fp === lastCandidateFingerprint) return;
       lastCandidateFingerprint = fp;
-      if (mainWindow && !mainWindow.isDestroyed()) {
-        mainWindow.webContents.send(IpcChannels.appsUpdatesAvailable, {
-          candidates: res.candidates,
-        });
-      }
+      broadcastEvent(IpcChannels.appsUpdatesAvailable, { candidates: res.candidates });
     } catch {
       /* silent — same as host poll */
     }
@@ -1074,6 +1137,29 @@ async function main(): Promise<void> {
   ipcMain.handle(IpcChannels.authSetToken, (_e, raw) => handleAuthSetToken(authDeps, raw));
   ipcMain.handle(IpcChannels.authClearToken, (_e, raw) => handleAuthClearToken(authDeps, raw));
 
+  // -----------------------------------------------------------------------
+  // host:setAutoLaunch / host:getAutoLaunch — start-at-login toggle.
+  // Cross-platform: Windows + macOS via app.setLoginItemSettings, Linux via
+  // freedesktop.org autostart .desktop file. Settings page calls these.
+  // -----------------------------------------------------------------------
+
+  ipcMain.handle(IpcChannels.hostSetAutoLaunch, (_e, raw) => {
+    const parsed = HostSetAutoLaunchReq.safeParse(raw);
+    if (!parsed.success) return { ok: false, error: 'invalid request' };
+    const r = setAutoLaunch(parsed.data.enabled);
+    if (!r.ok) return { ok: false, error: r.error };
+    return { ok: true, enabled: getAutoLaunch() };
+  });
+  ipcMain.handle(IpcChannels.hostGetAutoLaunch, (_e, raw) => {
+    const parsed = HostGetAutoLaunchReq.safeParse(raw ?? {});
+    if (!parsed.success) return { ok: false, error: 'invalid request' };
+    const supported =
+      process.platform === 'win32' ||
+      process.platform === 'darwin' ||
+      process.platform === 'linux';
+    return { ok: true, enabled: getAutoLaunch(), supported };
+  });
+
   app.on('second-instance', () => {
     if (mainWindow) {
       if (mainWindow.isMinimized()) mainWindow.restore();
@@ -1082,19 +1168,55 @@ async function main(): Promise<void> {
   });
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    if (!headless && BrowserWindow.getAllWindows().length === 0) createWindow();
   });
 
   app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') app.quit();
+    // In headless mode there's no window to wait for — staying alive is
+    // the entire point. The user `Ctrl+C`s the process when done, or kills
+    // the systemd unit / docker container that's running the host.
+    if (!headless && process.platform !== 'darwin') app.quit();
   });
 
-  createWindow();
+  if (headless) {
+    // Headless mode: skip BrowserWindow entirely. Build the IPC bridge
+    // adapting our handler registry + event subscribers, start the HTTP
+    // + WebSocket server, print the URL with token to stdout. The user
+    // copies that URL into a browser on whatever machine they like.
+    const bridge: IpcBridge = {
+      async invoke(channel, payload) {
+        const handler = ipcHandlerRegistry.get(channel);
+        if (!handler) throw new Error(`unknown channel: ${channel}`);
+        return handler(undefined, payload);
+      },
+      subscribe: subscribeBridge,
+    };
+    const port = resolveHeadlessPort();
+    const bind = resolveHeadlessBind();
+    const rendererDir = app.isPackaged
+      ? join(process.resourcesPath, 'app.asar.unpacked', 'out', 'renderer')
+      : join(process.cwd(), 'out', 'renderer');
+    const server = startHeadlessServer({ port, bindAddress: bind, rendererDir, bridge });
+    // eslint-disable-next-line no-console
+    console.log(`\nVDX Installer headless mode running.\n  Open: ${server.publicUrl}\n  Bind: ${bind}:${port}\n  Token rotates on every launch.\n`);
+    app.on('before-quit', () => {
+      void server.stop();
+    });
+  } else {
+    createWindow();
+  }
 
   // Tray + notifications. The icon is hidden by default; the user opts in
   // via Settings → trayMode (which we honor on next launch). Phase 2 will
   // make this dynamic without restart by exposing an IPC toggle.
-  const initialTrayMode = (await installedStore.read()).settings.trayMode;
+  // Auto-launched-hidden invocations always force tray-on regardless of
+  // setting — otherwise the user would have a host running with no UI
+  // and no way to reach it.
+  // Headless mode never installs a tray icon — there's no user-visible
+  // desktop session by definition. The host runs in the foreground (or
+  // under systemd/supervisor) and is reached only via the WebSocket UI.
+  const initialTrayMode =
+    !headless && ((await installedStore.read()).settings.trayMode || wasLaunchedHidden());
   if (initialTrayMode) {
     installTray({
       getWindow: () => mainWindow,

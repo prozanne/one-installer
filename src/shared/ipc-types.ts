@@ -21,6 +21,8 @@ export const IpcChannels = {
   appsCheckUpdates: 'apps:checkUpdates',
   appsUpdateRun: 'apps:updateRun',
   appsUpdatesAvailable: 'apps:updatesAvailable',
+  hostSetAutoLaunch: 'host:setAutoLaunch',
+  hostGetAutoLaunch: 'host:getAutoLaunch',
   authSetToken: 'auth:setToken',
   authClearToken: 'auth:clearToken',
 } as const;
@@ -321,3 +323,24 @@ export type AppsCheckUpdatesResT = z.infer<typeof AppsCheckUpdatesRes>;
 export type AppsUpdateRunReqT = z.infer<typeof AppsUpdateRunReq>;
 export type AppsUpdateRunResT = z.infer<typeof AppsUpdateRunRes>;
 export type AppsUpdatesAvailableEventT = z.infer<typeof AppsUpdatesAvailableEvent>;
+
+// ---------------------------------------------------------------------------
+// Host auto-launch (start at login)
+// ---------------------------------------------------------------------------
+
+export const HostSetAutoLaunchReq = z.object({ enabled: z.boolean() });
+export const HostSetAutoLaunchRes = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), enabled: z.boolean() }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+]);
+
+export const HostGetAutoLaunchReq = z.object({});
+export const HostGetAutoLaunchRes = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), enabled: z.boolean(), supported: z.boolean() }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+]);
+
+export type HostSetAutoLaunchReqT = z.infer<typeof HostSetAutoLaunchReq>;
+export type HostSetAutoLaunchResT = z.infer<typeof HostSetAutoLaunchRes>;
+export type HostGetAutoLaunchReqT = z.infer<typeof HostGetAutoLaunchReq>;
+export type HostGetAutoLaunchResT = z.infer<typeof HostGetAutoLaunchRes>;

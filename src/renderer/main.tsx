@@ -24,6 +24,16 @@ const UpdatesPage = lazy(() =>
   import('./pages/UpdatesPage').then((m) => ({ default: m.UpdatesPage })),
 );
 
+// In Electron, the preload script populates `window.vdxIpc` before this
+// file runs. In headless / browser mode there's no preload — fall back to
+// the WebSocket-backed polyfill that exposes the same shape over the
+// headless server's RPC bridge. Top-level await is supported by our
+// ESM target and React renders only after this resolves.
+if (!(window as Window & { vdxIpc?: unknown }).vdxIpc) {
+  const mod = await import('./transport-ws');
+  mod.installBrowserIpcPolyfill();
+}
+
 const root = createRoot(document.getElementById('root')!);
 root.render(
   <StrictMode>

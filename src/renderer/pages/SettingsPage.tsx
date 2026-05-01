@@ -12,14 +12,27 @@ export function SettingsPage(): ReactElement {
   const setError = useStore((s) => s.setError);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [saving, setSaving] = useState(false);
+  const [autoLaunch, setAutoLaunch] = useState<{ enabled: boolean; supported: boolean } | null>(
+    null,
+  );
 
   useEffect(() => {
     void (async () => {
       const res = await window.vdxIpc.settingsGet();
       if (res.ok) setSettings(res.settings);
       else setError(res.error);
+      const al = await window.vdxIpc.hostGetAutoLaunch();
+      if (al.ok) setAutoLaunch({ enabled: al.enabled, supported: al.supported });
     })();
   }, [setError]);
+
+  const toggleAutoLaunch = async (v: boolean) => {
+    setSaving(true);
+    const res = await window.vdxIpc.hostSetAutoLaunch({ enabled: v });
+    setSaving(false);
+    if (res.ok) setAutoLaunch((cur) => (cur ? { ...cur, enabled: res.enabled } : cur));
+    else setError(res.error);
+  };
 
   const patch = async (p: Partial<Settings>) => {
     setSaving(true);
@@ -84,6 +97,15 @@ export function SettingsPage(): ReactElement {
       </Section>
 
       <Section title="Behaviour">
+        {autoLaunch && autoLaunch.supported && (
+          <Toggle
+            label="Start automatically at login"
+            hint="Launches VDX Installer in the system tray on login. Available on Windows, macOS, and Linux."
+            checked={autoLaunch.enabled}
+            disabled={saving}
+            onChange={(v) => void toggleAutoLaunch(v)}
+          />
+        )}
         <Toggle
           label="Run in tray when window is closed"
           checked={settings.trayMode}

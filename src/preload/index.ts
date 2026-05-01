@@ -26,6 +26,9 @@ import type {
   AppsUpdateRunReqT,
   AppsUpdateRunResT,
   AppsUpdatesAvailableEventT,
+  HostSetAutoLaunchReqT,
+  HostSetAutoLaunchResT,
+  HostGetAutoLaunchResT,
   AuthSetTokenReqT,
   AuthSetTokenResT,
   AuthClearTokenResT,
@@ -102,6 +105,12 @@ const ipcApi = {
     const listener = (_e: IpcRendererEvent, payload: AppsUpdatesAvailableEventT) => cb(payload);
     ipcRenderer.on(IpcChannels.appsUpdatesAvailable, listener);
     return () => ipcRenderer.removeListener(IpcChannels.appsUpdatesAvailable, listener);
+  },
+  async hostSetAutoLaunch(req: HostSetAutoLaunchReqT): Promise<HostSetAutoLaunchResT> {
+    return ipcRenderer.invoke(IpcChannels.hostSetAutoLaunch, req);
+  },
+  async hostGetAutoLaunch(): Promise<HostGetAutoLaunchResT> {
+    return ipcRenderer.invoke(IpcChannels.hostGetAutoLaunch, {});
   },
   async authSetToken(req: AuthSetTokenReqT): Promise<AuthSetTokenResT> {
     return ipcRenderer.invoke(IpcChannels.authSetToken, req);
