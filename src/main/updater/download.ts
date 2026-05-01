@@ -16,6 +16,8 @@
  * @see docs/superpowers/specs/2026-05-01-vdx-installer-design.md §5.1
  */
 import { createWriteStream } from 'node:fs';
+import { mkdir } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import type { PackageSource } from '@shared/source/package-source';
 import type { UpdateInfo } from './types';
@@ -73,6 +75,11 @@ export async function downloadHostUpdate(
         `Expected source://<id>/<appId>/<version>/payload.zip format.`,
     );
   }
+
+  // Ensure parent directory exists. In production cacheDir is mkdir'd at
+  // startup, but if a caller passes a nested destPath (or cacheDir is wiped
+  // mid-session) the createWriteStream would otherwise ENOENT.
+  await mkdir(dirname(opts.destPath), { recursive: true });
 
   const hasher = createHash('sha256');
   // mode 0o600 — only the owner may read or replace the staged update binary.

@@ -203,28 +203,25 @@ describe('downloadHostUpdate — dest path behaviour', () => {
     }
   });
 
-  it.skip(
-    'creates parent directories if they do not exist — NOT implemented in Phase 1.1 impl (no mkdirp call)',
-    // The impl calls createWriteStream(destPath) directly without mkdir.
-    // Enabling this would require the impl to call fs.mkdir({ recursive: true }) on the parent.
-    // Skip until Phase 1.2 adds that behaviour.
-    async () => {
-      const tmpDir = mkdtempSync(join(tmpdir(), 'vdx-dl-'));
-      const nestedDestPath = join(tmpDir, 'a', 'b', 'c', 'installer.zip');
-      try {
-        const source = makeSource(PAYLOAD);
-        const info = makeInfo(APP_ID, VERSION);
-        await downloadHostUpdate(info, {
-          source,
-          destPath: nestedDestPath,
-          expectedSha256: CORRECT_SHA256,
-        });
-        expect(existsSync(nestedDestPath)).toBe(true);
-      } finally {
-        rmSync(tmpDir, { recursive: true, force: true });
-      }
-    },
-  );
+  it('creates parent directories if they do not exist', async () => {
+    // downloadHostUpdate calls fs.mkdir({recursive:true}) on dirname(destPath)
+    // before opening the write stream so a nested destPath (or a wiped cacheDir
+    // mid-session) doesn't ENOENT.
+    const tmpDir = mkdtempSync(join(tmpdir(), 'vdx-dl-'));
+    const nestedDestPath = join(tmpDir, 'a', 'b', 'c', 'installer.zip');
+    try {
+      const source = makeSource(PAYLOAD);
+      const info = makeInfo(APP_ID, VERSION);
+      await downloadHostUpdate(info, {
+        source,
+        destPath: nestedDestPath,
+        expectedSha256: CORRECT_SHA256,
+      });
+      expect(existsSync(nestedDestPath)).toBe(true);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 
   it('throws with a descriptive error when downloadUrl is not a source:// URL', async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), 'vdx-dl-'));

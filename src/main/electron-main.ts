@@ -27,9 +27,9 @@ import {
   fetchManifestVerified,
   fetchPayloadStream,
 } from './catalog';
-import { checkForHostUpdate, downloadHostUpdate, SELF_UPDATE_APP_ID } from './updater';
 import { handleSettingsGet, handleSettingsSet } from './ipc/handlers/settings';
 import { handleUpdateCheck, handleUpdateRun } from './ipc/handlers/update';
+import { handleDiagExport, handleDiagOpenLogs } from './ipc/handlers/diag';
 import {
   IpcChannels,
   SideloadOpenReq,
@@ -37,12 +37,6 @@ import {
   UninstallRunReq,
   CatalogFetchReq,
   CatalogInstallReq,
-  SettingsGetReq,
-  SettingsSetReq,
-  DiagExportReq,
-  DiagOpenLogsReq,
-  UpdateCheckReq,
-  UpdateRunReq,
   AuthSetTokenReq,
   AuthClearTokenReq,
   type SideloadOpenResT,
@@ -53,12 +47,6 @@ import {
   type CatalogFetchResT,
   type CatalogInstallResT,
   type CatalogKindT,
-  type SettingsGetResT,
-  type SettingsSetResT,
-  type DiagExportResT,
-  type DiagOpenLogsResT,
-  type UpdateCheckResT,
-  type UpdateRunResT,
   type AuthSetTokenResT,
   type AuthClearTokenResT,
 } from '@shared/ipc-types';
@@ -849,56 +837,9 @@ async function main(): Promise<void> {
   // diag:export — bundle logs to a ZIP archive using yazl
   // -----------------------------------------------------------------------
 
-  ipcMain.handle(IpcChannels.diagExport, async (_e, raw): Promise<DiagExportResT> => {
-    const parsed = DiagExportReq.safeParse(raw ?? {});
-    if (!parsed.success) return { ok: false, error: 'invalid request' };
-    try {
-      const archivePath = join(paths.cacheDir, `vdx-diag-${Date.now()}.zip`);
-      await new Promise<void>((resolve, reject) => {
-        const zipFile = new yazl.ZipFile();
-        const outStream = createWriteStream(archivePath);
-        zipFile.outputStream.pipe(outStream);
-        outStream.on('close', resolve);
-        outStream.on('error', reject);
-        zipFile.outputStream.on('error', reject);
-
-        void (async () => {
-          try {
-            const logFiles = await readdir(paths.logsDir);
-            for (const name of logFiles) {
-              if (!name.endsWith('.log') && !name.endsWith('.ndjson')) continue;
-              zipFile.addFile(join(paths.logsDir, name), `logs/${name}`);
-            }
-          } catch {
-            // logsDir may not yet have files — not fatal
-          }
-          zipFile.end();
-        })();
-      });
-      // Reveal the archive in the OS file manager from main, so the renderer
-      // never receives a path string. The user still gets visual confirmation
-      // ("here's your zip"), but the process boundary stays one-way.
-      shell.showItemInFolder(archivePath);
-      return { ok: true };
-    } catch (e) {
-      return { ok: false, error: (e as Error).message };
-    }
-  });
-
-  // -----------------------------------------------------------------------
-  // diag:open-logs — open the logs directory in the OS file manager
-  // -----------------------------------------------------------------------
-
-  ipcMain.handle(IpcChannels.diagOpenLogs, async (_e, raw): Promise<DiagOpenLogsResT> => {
-    const parsed = DiagOpenLogsReq.safeParse(raw);
-    if (!parsed.success) return { ok: false, error: 'invalid request' };
-    try {
-      await shell.openPath(paths.logsDir);
-      return { ok: true };
-    } catch (e) {
-      return { ok: false, error: (e as Error).message };
-    }
-  });
+  const diagDeps = { paths: { cacheDir: paths.cacheDir, logsDir: paths.logsDir }, shell };
+  ipcMain.handle(IpcChannels.diagExport, (_e, raw) => handleDiagExport(diagDeps, raw));
+  ipcMain.handle(IpcChannels.diagOpenLogs, (_e, raw) => handleDiagOpenLogs(diagDeps, raw));
 
   // -----------------------------------------------------------------------
   // update:check — query PackageSource for a newer host version
