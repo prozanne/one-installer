@@ -26,6 +26,11 @@ export const IpcChannels = {
   hostInfo: 'host:info',
   authSetToken: 'auth:setToken',
   authClearToken: 'auth:clearToken',
+  syncStatus: 'sync:status',
+  syncRun: 'sync:run',
+  syncReport: 'sync:report',
+  hostExportState: 'host:exportState',
+  hostImportState: 'host:importState',
 } as const;
 
 export const CatalogKindSchema = z.enum(['app', 'agent']);
@@ -374,3 +379,138 @@ export const HostInfoRes = z.discriminatedUnion('ok', [
 
 export type HostInfoReqT = z.infer<typeof HostInfoReq>;
 export type HostInfoResT = z.infer<typeof HostInfoRes>;
+
+// ---------------------------------------------------------------------------
+// Fleet Profile Sync IPC
+//
+// `sync:status` — pull the current profile, freshness, last reconcile report.
+// `sync:run`    — trigger a reconcile NOW (with optional dryRun flag).
+// `sync:report` — broadcast event after every reconcile (incl. background).
+//
+// All three are no-ops when `vdx.config.json#syncProfile` is unset; the
+// renderer keys off `enabled: false` to hide the Sync tab.
+// ---------------------------------------------------------------------------
+
+const ReconcileActionSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('installed'), appId: z.string(), version: z.string() }),
+  z.object({ kind: z.literal('updated'), appId: z.string(), fromVersion: z.string(), toVersion: z.string() }),
+  z.object({ kind: z.literal('uninstalled'), appId: z.string() }),
+  z.object({ kind: z.literal('skipped'), appId: z.string(), reason: z.string() }),
+  z.object({ kind: z.literal('failed'), appId: z.string(), error: z.string() }),
+]);
+
+const SyncReportSchema = z.object({
+  profileName: z.string(),
+  startedAt: z.string().datetime(),
+  finishedAt: z.string().datetime(),
+  dryRun: z.boolean(),
+  actions: z.array(ReconcileActionSchema),
+});
+
+export const SyncStatusReq = z.object({});
+export const SyncStatusRes = z.discriminatedUnion('ok', [
+  z.object({
+    ok: z.literal(true),
+    /** True iff vdx.config.json#syncProfile is configured. */
+    enabled: z.boolean(),
+    /** Profile URL — surfaced for the operator to know which profile this fleet runs. */
+    profileUrl: z.string().url().nullable(),
+    /** Resolved profile name from the most recent successful fetch. Null on first run / fetch failure. */
+    profileName: z.string().nullable(),
+    /**
+     * Timestamp of the most recent reconcile attempt (success OR failure).
+     * Null if we've never run.
+     */
+    lastReconciledAt: z.string().datetime().nullable(),
+    /** Last reconcile result — same shape as the broadcast event. Null if never run. */
+    lastReport: SyncReportSchema.nullable(),
+    /**
+     * Whether a reconcile is currently in flight. UI uses this to disable
+     * the "Sync now" button.
+     */
+    inFlight: z.boolean(),
+  }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+]);
+
+export const SyncRunReq = z.object({
+  /** Compute drift but don't install/uninstall. Default false. */
+  dryRun: z.boolean().default(false),
+});
+export const SyncRunRes = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), report: SyncReportSchema }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+]);
+
+export const SyncReportEvent = SyncReportSchema;
+
+export type SyncStatusReqT = z.infer<typeof SyncStatusReq>;
+export type SyncStatusResT = z.infer<typeof SyncStatusRes>;
+export type SyncRunReqT = z.infer<typeof SyncRunReq>;
+export type SyncRunResT = z.infer<typeof SyncRunRes>;
+export type SyncReportEventT = z.infer<typeof SyncReportEvent>;
+export type ReconcileActionEventT = z.infer<typeof ReconcileActionSchema>;
+
+// ---------------------------------------------------------------------------
+// Host state backup / restore — D bonus.
+//
+// `host:exportState` returns a JSON blob the user can save/transmit; restoring
+// it on another host (or after a reinstall) reseeds installed.json and the
+// settings block. We DO NOT export wizardAnswers fields containing secrets —
+// the schema lets manifests author opaque text fields, so we round-trip
+// everything as opaque values; the user is responsible for not exporting a
+// host whose installed apps are storing PATs in their wizardAnswers.
+// ---------------------------------------------------------------------------
+
+const StateBackupSchema = z.object({
+  /** schemaVersion of the backup — distinct from installed.json's `schema`. */
+  backupSchema: z.literal(1),
+  exportedAt: z.string().datetime(),
+  /** Host that produced this export. Informational. */
+  hostVersion: z.string(),
+  /** Subset of installed.json. Only fields safe to round-trip across hosts. */
+  apps: z.record(
+    z.string(),
+    z.object({
+      version: z.string(),
+      installScope: z.enum(['user', 'machine']),
+      wizardAnswers: z.record(z.string(), z.unknown()),
+      kind: z.enum(['app', 'agent']),
+      updateChannel: z.enum(['stable', 'beta', 'internal']),
+      autoUpdate: z.enum(['auto', 'ask', 'manual']),
+    }),
+  ),
+  settings: InstalledStateSchema.shape.settings,
+});
+
+export const HostExportStateReq = z.object({});
+export const HostExportStateRes = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), backup: StateBackupSchema }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+]);
+
+export const HostImportStateReq = z.object({
+  backup: StateBackupSchema,
+  /**
+   * If true, also reconcile after import — install everything in the backup
+   * that isn't already on disk. Default false: import is metadata-only by
+   * default; the user can press "Sync now" if they want the actual installs.
+   */
+  reinstall: z.boolean().default(false),
+});
+export const HostImportStateRes = z.discriminatedUnion('ok', [
+  z.object({
+    ok: z.literal(true),
+    /** Number of app entries merged into installed.json. */
+    appsMerged: z.number().int().nonnegative(),
+  }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+]);
+
+export type StateBackupT = z.infer<typeof StateBackupSchema>;
+export type HostExportStateReqT = z.infer<typeof HostExportStateReq>;
+export type HostExportStateResT = z.infer<typeof HostExportStateRes>;
+export type HostImportStateReqT = z.infer<typeof HostImportStateReq>;
+export type HostImportStateResT = z.infer<typeof HostImportStateRes>;
+
+export { StateBackupSchema, SyncReportSchema, ReconcileActionSchema };

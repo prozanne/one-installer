@@ -70,6 +70,14 @@ export function App() {
             )}
           </NavLink>
           <NavLink
+            to="/sync"
+            className={({ isActive }) =>
+              `px-3 py-2 rounded-md ${isActive ? 'bg-white shadow-sm' : 'hover:bg-white/60'}`
+            }
+          >
+            Sync
+          </NavLink>
+          <NavLink
             to="/settings"
             className={({ isActive }) =>
               `px-3 py-2 rounded-md ${isActive ? 'bg-white shadow-sm' : 'hover:bg-white/60'}`

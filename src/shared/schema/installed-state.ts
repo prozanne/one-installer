@@ -61,6 +61,28 @@ export const InstalledStateSchema = z.object({
   catalogFreshness: z
     .record(z.enum(['app', 'agent']), z.string().datetime())
     .optional(),
+  /**
+   * Highest profile `updatedAt` we've ever accepted (replay-defended like the
+   * catalog). Nullable so a first run accepts any profile.
+   */
+  syncProfileFreshness: z.string().datetime().nullable().optional(),
+  /**
+   * Last reconcile result. Surfaced on the Sync tab; survives restarts so
+   * the user sees yesterday's report immediately on launch instead of an
+   * empty state. Schema is intentionally permissive (z.unknown wrapped in
+   * a record) — the producer is the reconcile engine and we don't strict-
+   * validate it on read so adding fields later doesn't poison `.bak` reads.
+   */
+  lastSyncReport: z
+    .object({
+      profileName: z.string(),
+      startedAt: z.string().datetime(),
+      finishedAt: z.string().datetime(),
+      dryRun: z.boolean(),
+      actions: z.array(z.record(z.string(), z.unknown())),
+    })
+    .nullable()
+    .optional(),
 });
 
 export type InstalledStateT = z.infer<typeof InstalledStateSchema>;

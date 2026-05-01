@@ -46,6 +46,10 @@ import {
 import { handleDiagExport, handleDiagOpenLogs } from './ipc/handlers/diag';
 import { handleAuthSetToken, handleAuthClearToken } from './ipc/handlers/auth';
 import { handleAppsList } from './ipc/handlers/apps';
+import { handleSyncStatus, handleSyncRun } from './ipc/handlers/sync';
+import { handleHostExportState, handleHostImportState } from './ipc/handlers/host-state';
+import { fetchProfile, diffProfile, reconcileProfile, type ReconcileReport } from './sync';
+import type { SyncProfileT } from '@shared/schema';
 import { createPickerAllowlist } from './ipc/picker-allowlist';
 import { computeCsp } from './ipc/csp';
 import { ipcError, ipcErrorMessage } from './ipc/error';
@@ -1091,6 +1095,201 @@ async function main(): Promise<void> {
     handleAppsCheckUpdates(appsUpdateDeps, raw),
   );
   ipcMain.handle(IpcChannels.appsUpdateRun, (_e, raw) => handleAppsUpdateRun(appsUpdateDeps, raw));
+
+  // -----------------------------------------------------------------------
+  // Fleet Profile Sync — sync:status / sync:run + periodic reconcile loop.
+  //
+  // The profile is fetched + verified by the sync module; reconciles route
+  // through the same `triggerCatalogInstallProgrammatically` closure
+  // per-app updates use, then drive `install:run` via the same handler the
+  // wizard ends in. This keeps trust verification + journal contention
+  // serialized through one path; no second install code path here.
+  //
+  // A single `syncInFlight` flag serializes background and IPC-triggered
+  // reconciles so two timers can't race the installed-store update queue.
+  // -----------------------------------------------------------------------
+
+  let syncCachedProfile: SyncProfileT | null = null;
+  let syncInFlight = false;
+  const SYNC_MIN_INTERVAL_MS = 5 * 60 * 1000; // floor; below this we'd be hammering the source
+
+  // Programmatic install adapter for the reconcile loop. Wires through
+  // catalog:install (which produces a sessionId) then immediately install:run
+  // with the operator-canned wizardAnswers. The reconcile loop awaits both
+  // calls so the report's actions list reflects actually-completed installs.
+  const reconcileInstall = async (input: {
+    appId: string;
+    kind: CatalogKindT;
+    wizardAnswers: Record<string, unknown>;
+    channel: 'stable' | 'beta' | 'internal';
+  }): Promise<{ ok: true; version: string } | { ok: false; error: string }> => {
+    const open = await triggerCatalogInstallProgrammatically(input.kind, input.appId);
+    if (!open.ok) return { ok: false, error: open.error };
+    const installHandler = ipcMain.listeners(IpcChannels.installRun)[0] as
+      | ((event: unknown, raw: unknown) => Promise<InstallRunResT>)
+      | undefined;
+    if (!installHandler) return { ok: false, error: 'install:run handler missing' };
+    const installRes = await installHandler(undefined, {
+      sessionId: open.sessionId,
+      wizardAnswers: input.wizardAnswers,
+      kind: input.kind,
+    });
+    if (!installRes.ok) return { ok: false, error: installRes.error };
+    // Stash channel onto the just-installed entry so per-app update flow
+    // honors the profile's channel pin. Defensive: lookup may briefly
+    // miss if the entry hasn't flushed yet.
+    await installedStore.update((s) => {
+      const entry = s.apps[input.appId];
+      if (entry) {
+        entry.updateChannel = input.channel;
+      }
+    });
+    return { ok: true, version: open.manifest.version };
+  };
+
+  const reconcileUninstall = async (input: { appId: string }): Promise<
+    { ok: true } | { ok: false; error: string }
+  > => {
+    const handler = ipcMain.listeners(IpcChannels.uninstallRun)[0] as
+      | ((event: unknown, raw: unknown) => Promise<UninstallRunResT>)
+      | undefined;
+    if (!handler) return { ok: false, error: 'uninstall:run handler missing' };
+    const res = await handler(undefined, { appId: input.appId });
+    if (!res.ok) return { ok: false, error: res.error };
+    return { ok: true };
+  };
+
+  const performReconcile = async (
+    input: { dryRun: boolean },
+  ): Promise<{ ok: true; report: ReconcileReport } | { ok: false; error: string }> => {
+    const dryRun = input.dryRun;
+    if (!config.syncProfile) {
+      return { ok: false, error: 'No syncProfile configured' };
+    }
+    if (syncInFlight) {
+      return { ok: false, error: 'Reconcile already in flight' };
+    }
+    syncInFlight = true;
+    try {
+      const state = await installedStore.read();
+      const trustRoots = await getTrustRoots();
+      const fetched = await fetchProfile({
+        url: config.syncProfile.url,
+        sigUrl: config.syncProfile.sigUrl,
+        trustRoots,
+        timeoutMs: 15_000,
+        userAgent: `vdx-installer/${HOST_VERSION}`,
+        freshnessAnchor: state.syncProfileFreshness ?? null,
+      });
+      if (!fetched.ok) return { ok: false, error: fetched.error };
+      if (!fetched.value.signatureValid) {
+        return {
+          ok: false,
+          error:
+            'Profile signature did not verify against any trust root. Refusing to reconcile.',
+        };
+      }
+      syncCachedProfile = fetched.value.profile;
+      // Persist freshness anchor so a replay of an older profile is rejected.
+      await installedStore.update((s) => {
+        s.syncProfileFreshness = fetched.value.profile.updatedAt;
+      });
+      const drift = diffProfile({
+        profile: fetched.value.profile,
+        installed: state.apps,
+        getCatalog: (kind) => catalogCacheEntries.get(kind)?.catalog ?? null,
+      });
+      const report = await reconcileProfile(
+        { installApp: reconcileInstall, uninstallApp: reconcileUninstall },
+        {
+          profileName: fetched.value.profile.name,
+          drift,
+          dryRun,
+        },
+      );
+      // Persist the report so a relaunch shows "yesterday's report" instantly.
+      await installedStore.update((s) => {
+        s.lastSyncReport = {
+          profileName: report.profileName,
+          startedAt: report.startedAt,
+          finishedAt: report.finishedAt,
+          dryRun: report.dryRun,
+          actions: report.actions as unknown as Array<Record<string, unknown>>,
+        };
+      });
+      // Broadcast — the renderer (and headless WS clients) update their UI.
+      broadcastEvent(IpcChannels.syncReport, report);
+      return { ok: true, report };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    } finally {
+      syncInFlight = false;
+    }
+  };
+
+  const syncDeps = {
+    profileUrl: () => config.syncProfile?.url ?? null,
+    cachedProfile: () => syncCachedProfile,
+    readInstalled: () => installedStore.read(),
+    inFlight: () => syncInFlight,
+    runReconcile: performReconcile,
+  };
+  ipcMain.handle(IpcChannels.syncStatus, (_e, raw) => handleSyncStatus(syncDeps, raw));
+  ipcMain.handle(IpcChannels.syncRun, (_e, raw) => handleSyncRun(syncDeps, raw));
+
+  if (config.syncProfile) {
+    const intervalMs = Math.max(
+      SYNC_MIN_INTERVAL_MS,
+      config.syncProfile.intervalMin * 60 * 1000,
+    );
+    const autoApply = config.syncProfile.autoApply !== false;
+    // Initial reconcile 10s after launch so first paint isn't blocked by
+    // the network. Background ticks run on the configured cadence.
+    setTimeout(() => {
+      void performReconcile({ dryRun: !autoApply });
+    }, 10_000);
+    const syncInterval = setInterval(() => {
+      void performReconcile({ dryRun: !autoApply });
+    }, intervalMs);
+    app.on('before-quit', () => clearInterval(syncInterval));
+  }
+
+  // -----------------------------------------------------------------------
+  // host:exportState / host:importState — backup/restore (D bonus).
+  // -----------------------------------------------------------------------
+  const placeholderManifestForId = (appId: string): Manifest => ({
+    schemaVersion: 1,
+    id: appId,
+    name: { default: appId },
+    version: '0.0.0',
+    publisher: 'imported',
+    description: { default: 'Restored from backup — reinstall via Sync.' },
+    size: { download: 0, installed: 0 },
+    payload: {
+      filename: 'placeholder.zip',
+      sha256: '0'.repeat(64),
+      compressedSize: 1,
+    },
+    minHostVersion: '0.0.0',
+    targets: { os: 'win32', arch: ['x64'] },
+    installScope: { supports: ['user'], default: 'user' },
+    requiresReboot: false,
+    wizard: [{ type: 'summary' }],
+    install: { extract: [{ from: '.', to: '.' }] },
+    postInstall: [],
+    uninstall: { removePaths: [], removeShortcuts: true, removeEnvPath: true },
+  });
+  const hostStateDeps = {
+    installedStore,
+    hostVersion: HOST_VERSION,
+    placeholderManifestForId,
+  };
+  ipcMain.handle(IpcChannels.hostExportState, (_e, raw) =>
+    handleHostExportState(hostStateDeps, raw),
+  );
+  ipcMain.handle(IpcChannels.hostImportState, (_e, raw) =>
+    handleHostImportState(hostStateDeps, raw),
+  );
 
   // Broadcast app-update candidates after every catalog refresh. We
   // re-check on a 6 h cadence (same as host self-update poll) plus

@@ -167,6 +167,29 @@ const AgentCatalogConfig = z
   })
   .strict();
 
+/**
+ * Fleet Profile Sync — points at a signed JSON profile that declares the
+ * desired set of installed apps for this fleet. Same trust chain as the
+ * catalog (verifies against `trustRoots`). `intervalMin` is clamped at the
+ * runtime layer to a sensible floor; the schema only enforces a positive
+ * integer so an operator can dial up to "once every few hours" if they like.
+ */
+const SyncProfileConfig = z
+  .object({
+    url: z.string().url(),
+    sigUrl: z.string().url(),
+    /** Reconcile cadence in minutes. Min 5 (engine-side clamp), max 1440 (24h). */
+    intervalMin: z.number().int().positive().max(1440).default(60),
+    /**
+     * If false, periodic reconciles are NOT auto-applied — they only emit a
+     * `sync:report` event listing the drift. The user/operator must press
+     * "Sync now" to actually install/uninstall. Default true: fleet machines
+     * normally want hands-off reconciliation. Set false for opt-in mode.
+     */
+    autoApply: z.boolean().default(true),
+  })
+  .strict();
+
 // Strict on the operator-edited config so a typo in vdx.config.json
 // (`developperMode: true`, `trustRoot: [...]`) fails loudly at startup
 // instead of silently being stripped — exactly the kind of footgun a
@@ -175,6 +198,7 @@ export const VdxConfigSchema = z.object({
   schemaVersion: z.literal(1),
   source: SourceConfig,
   agentCatalog: AgentCatalogConfig.optional(),
+  syncProfile: SyncProfileConfig.optional(),
   trustRoots: z.array(TrustRoot).max(16).optional(),
   channel: z.enum(['stable', 'beta', 'internal']).default('stable'),
   proxy: ProxyConfig.optional(),

@@ -33,6 +33,13 @@ import type {
   AuthSetTokenReqT,
   AuthSetTokenResT,
   AuthClearTokenResT,
+  SyncStatusResT,
+  SyncRunReqT,
+  SyncRunResT,
+  SyncReportEventT,
+  HostExportStateResT,
+  HostImportStateReqT,
+  HostImportStateResT,
 } from '@shared/ipc-types';
 
 const ipcApi = {
@@ -121,6 +128,28 @@ const ipcApi = {
   },
   async authClearToken(): Promise<AuthClearTokenResT> {
     return ipcRenderer.invoke(IpcChannels.authClearToken, {});
+  },
+  async syncStatus(): Promise<SyncStatusResT> {
+    return ipcRenderer.invoke(IpcChannels.syncStatus, {});
+  },
+  async syncRun(req?: SyncRunReqT): Promise<SyncRunResT> {
+    return ipcRenderer.invoke(IpcChannels.syncRun, req ?? { dryRun: false });
+  },
+  /**
+   * Subscribe to background `sync:report` broadcasts. Fires after every
+   * reconcile (including the periodic background ones), regardless of
+   * whether anything was installed/uninstalled. Returns an unsubscribe.
+   */
+  onSyncReport(cb: (ev: SyncReportEventT) => void): () => void {
+    const listener = (_e: IpcRendererEvent, payload: SyncReportEventT) => cb(payload);
+    ipcRenderer.on(IpcChannels.syncReport, listener);
+    return () => ipcRenderer.removeListener(IpcChannels.syncReport, listener);
+  },
+  async hostExportState(): Promise<HostExportStateResT> {
+    return ipcRenderer.invoke(IpcChannels.hostExportState, {});
+  },
+  async hostImportState(req: HostImportStateReqT): Promise<HostImportStateResT> {
+    return ipcRenderer.invoke(IpcChannels.hostImportState, req);
   },
   onProgress(cb: (ev: ProgressEventT) => void): () => void {
     const listener = (_e: IpcRendererEvent, payload: ProgressEventT) => cb(payload);

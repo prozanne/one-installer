@@ -23,6 +23,9 @@ const SettingsPage = lazy(() =>
 const UpdatesPage = lazy(() =>
   import('./pages/UpdatesPage').then((m) => ({ default: m.UpdatesPage })),
 );
+const SyncPage = lazy(() =>
+  import('./pages/SyncPage').then((m) => ({ default: m.SyncPage })),
+);
 
 // In Electron, the preload script populates `window.vdxIpc` before this
 // file runs. In headless / browser mode there's no preload — fall back to
@@ -78,6 +81,14 @@ root.render(
             element={
               <Suspense fallback={null}>
                 <UpdatesPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="sync"
+            element={
+              <Suspense fallback={null}>
+                <SyncPage />
               </Suspense>
             }
           />

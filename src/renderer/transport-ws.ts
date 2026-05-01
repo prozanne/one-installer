@@ -48,6 +48,13 @@ import type {
   AuthSetTokenResT,
   AuthClearTokenResT,
   HostInfoResT,
+  SyncStatusResT,
+  SyncRunReqT,
+  SyncRunResT,
+  SyncReportEventT,
+  HostExportStateResT,
+  HostImportStateReqT,
+  HostImportStateResT,
 } from '@shared/ipc-types';
 
 type ServerFrame =
@@ -402,6 +409,13 @@ export function installBrowserIpcPolyfill(): void {
     authSetToken: (req: AuthSetTokenReqT) =>
       rpc<AuthSetTokenResT>(IpcChannels.authSetToken, req),
     authClearToken: () => rpc<AuthClearTokenResT>(IpcChannels.authClearToken, {}),
+    syncStatus: () => rpc<SyncStatusResT>(IpcChannels.syncStatus, {}),
+    syncRun: (req?: SyncRunReqT) =>
+      rpc<SyncRunResT>(IpcChannels.syncRun, req ?? { dryRun: false }),
+    onSyncReport: (cb: (ev: SyncReportEventT) => void) => subscribe(IpcChannels.syncReport, cb),
+    hostExportState: () => rpc<HostExportStateResT>(IpcChannels.hostExportState, {}),
+    hostImportState: (req: HostImportStateReqT) =>
+      rpc<HostImportStateResT>(IpcChannels.hostImportState, req),
     onProgress: (cb: (ev: ProgressEventT) => void) => subscribe(IpcChannels.installProgress, cb),
   };
 
