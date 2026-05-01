@@ -20,6 +20,9 @@ const AgentsPage = lazy(() =>
 const SettingsPage = lazy(() =>
   import('./pages/SettingsPage').then((m) => ({ default: m.SettingsPage })),
 );
+const UpdatesPage = lazy(() =>
+  import('./pages/UpdatesPage').then((m) => ({ default: m.UpdatesPage })),
+);
 
 const root = createRoot(document.getElementById('root')!);
 root.render(
@@ -57,6 +60,14 @@ root.render(
             element={
               <Suspense fallback={null}>
                 <SettingsPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="updates"
+            element={
+              <Suspense fallback={null}>
+                <UpdatesPage />
               </Suspense>
             }
           />

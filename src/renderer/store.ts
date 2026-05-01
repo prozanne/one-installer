@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import type { CatalogT, Manifest } from '@shared/schema';
 import type {
   AppsListResT,
+  AppUpdateCandidateT,
   ProgressEventT,
   UpdateAvailableEventT,
 } from '@shared/ipc-types';
@@ -57,6 +58,12 @@ export interface UiState {
   setSelfUpdate: (s: SelfUpdateState) => void;
   runSelfUpdate: () => Promise<void>;
   applySelfUpdate: () => Promise<void>;
+  /** Per-app update candidates surfaced via apps:checkUpdates / apps:updatesAvailable. */
+  appUpdates: AppUpdateCandidateT[];
+  setAppUpdates: (candidates: AppUpdateCandidateT[]) => void;
+  refreshAppUpdates: () => Promise<void>;
+  /** Trigger a single-app update; routes the renderer to the wizard with the new session. */
+  runAppUpdate: (appId: string) => Promise<{ ok: boolean; error?: string }>;
   refreshApps: () => Promise<void>;
   startSideload: (vdxpkgPath: string) => Promise<{ ok: boolean; error?: string }>;
   refreshCatalog: (kind: 'app' | 'agent') => Promise<void>;
@@ -90,6 +97,48 @@ export const useStore = create<UiState>()((set, get) => ({
   appCatalog: emptyCatalog(),
   agentCatalog: emptyCatalog(),
   selfUpdate: { phase: 'idle' },
+  appUpdates: [],
+  setAppUpdates(candidates) {
+    set({ appUpdates: candidates });
+  },
+  async refreshAppUpdates() {
+    const res = await window.vdxIpc.appsCheckUpdates();
+    if (res.ok) set({ appUpdates: res.candidates });
+  },
+  async runAppUpdate(appId) {
+    const res = await window.vdxIpc.appsUpdateRun({ appId });
+    if (!res.ok) {
+      set({ error: res.error });
+      return { ok: false, error: res.error };
+    }
+    if (res.installed) {
+      // Silent path completed (none today, since handler always returns
+      // installed:false). Refresh installed apps + drop this candidate.
+      await get().refreshApps();
+      set({ appUpdates: get().appUpdates.filter((c) => c.appId !== appId) });
+      return { ok: true };
+    }
+    if (!res.sessionId || !res.manifest || !res.defaultInstallPath) {
+      const msg = 'Invalid response from apps:updateRun';
+      set({ error: msg });
+      return { ok: false, error: msg };
+    }
+    // Wizard path — drop into the same SideloadState the catalog flow uses.
+    const candidate = get().appUpdates.find((c) => c.appId === appId);
+    set({
+      sideload: {
+        sessionId: res.sessionId,
+        manifest: res.manifest,
+        defaultInstallPath: res.defaultInstallPath,
+        signatureValid: res.signatureValid ?? false,
+        kind: candidate?.kind ?? 'app',
+      },
+      wizardAnswers: { installPath: res.defaultInstallPath },
+      progress: null,
+      error: null,
+    });
+    return { ok: true };
+  },
   setSelfUpdate(s) {
     set({ selfUpdate: s });
   },

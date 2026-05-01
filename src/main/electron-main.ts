@@ -29,6 +29,11 @@ import { checkCatalogFreshness, getFreshnessAnchor } from './catalog/freshness';
 import { resolveTrustRoots } from './config/trust-roots';
 import { handleSettingsGet, handleSettingsSet } from './ipc/handlers/settings';
 import { handleUpdateApply, handleUpdateCheck, handleUpdateRun } from './ipc/handlers/update';
+import {
+  handleAppsCheckUpdates,
+  handleAppsUpdateRun,
+} from './ipc/handlers/apps-update';
+import { disposeTray, installTray, notifyUpdateReady, resolveTrayIconPath } from './tray';
 import { handleDiagExport, handleDiagOpenLogs } from './ipc/handlers/diag';
 import { handleAuthSetToken, handleAuthClearToken } from './ipc/handlers/auth';
 import { handleAppsList } from './ipc/handlers/apps';
@@ -986,6 +991,71 @@ async function main(): Promise<void> {
   app.on('before-quit', () => clearInterval(pollInterval));
 
   // -----------------------------------------------------------------------
+  // apps:checkUpdates / apps:updateRun — per-installed-app update flow.
+  //
+  // The handler reuses the catalog:install pipeline by routing through a
+  // closure that calls the same IPC body the renderer would. This keeps
+  // signature verification, payload streaming, and session bookkeeping in
+  // exactly one place — there is no second install code path to keep in
+  // sync.
+  // -----------------------------------------------------------------------
+
+  const triggerCatalogInstallProgrammatically = async (
+    kind: CatalogKindT,
+    appId: string,
+  ): Promise<CatalogInstallResT> => {
+    const handler = ipcMain.listeners(IpcChannels.catalogInstall)[0] as
+      | ((event: unknown, raw: unknown) => Promise<CatalogInstallResT>)
+      | undefined;
+    if (!handler) {
+      return { ok: false, error: 'catalog:install handler not registered yet' };
+    }
+    return handler(undefined, { kind, appId });
+  };
+
+  const appsUpdateDeps = {
+    readInstalled: async () => (await installedStore.read()).apps,
+    getCatalog: (kind: CatalogKindT) => catalogCacheEntries.get(kind)?.catalog ?? null,
+    channel: () => 'stable' as 'stable' | 'beta' | 'internal',
+    triggerCatalogInstall: triggerCatalogInstallProgrammatically,
+  };
+  ipcMain.handle(IpcChannels.appsCheckUpdates, (_e, raw) =>
+    handleAppsCheckUpdates(appsUpdateDeps, raw),
+  );
+  ipcMain.handle(IpcChannels.appsUpdateRun, (_e, raw) => handleAppsUpdateRun(appsUpdateDeps, raw));
+
+  // Broadcast app-update candidates after every catalog refresh. We
+  // re-check on a 6 h cadence (same as host self-update poll) plus
+  // immediately after each catalog:fetch IPC succeeds. The renderer
+  // dedups by candidate-set fingerprint internally.
+  let lastCandidateFingerprint = '';
+  const broadcastAppUpdates = async (): Promise<void> => {
+    try {
+      const res = await handleAppsCheckUpdates(appsUpdateDeps, {});
+      if (!res.ok) return;
+      const fp = JSON.stringify(
+        res.candidates.map((c) => `${c.appId}:${c.fromVersion}>${c.toVersion}`).sort(),
+      );
+      if (fp === lastCandidateFingerprint) return;
+      lastCandidateFingerprint = fp;
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send(IpcChannels.appsUpdatesAvailable, {
+          candidates: res.candidates,
+        });
+      }
+    } catch {
+      /* silent — same as host poll */
+    }
+  };
+  setTimeout(() => {
+    void broadcastAppUpdates();
+  }, 6_000);
+  const appsPollInterval = setInterval(() => {
+    void broadcastAppUpdates();
+  }, SIX_HOURS_MS);
+  app.on('before-quit', () => clearInterval(appsPollInterval));
+
+  // -----------------------------------------------------------------------
   // auth:setToken / auth:clearToken — first-run PAT flow.
   //
   // Tokens are encrypted with Electron safeStorage (Keychain on macOS,
@@ -1020,6 +1090,36 @@ async function main(): Promise<void> {
   });
 
   createWindow();
+
+  // Tray + notifications. The icon is hidden by default; the user opts in
+  // via Settings → trayMode (which we honor on next launch). Phase 2 will
+  // make this dynamic without restart by exposing an IPC toggle.
+  const initialTrayMode = (await installedStore.read()).settings.trayMode;
+  if (initialTrayMode) {
+    installTray({
+      getWindow: () => mainWindow,
+      triggerUpdateCheck: async () => {
+        await pollSelfUpdate();
+      },
+      iconPath: resolveTrayIconPath() ?? undefined,
+    });
+  }
+  app.on('before-quit', () => disposeTray());
+
+  // Notify when an update becomes ready (post-download, pre-restart).
+  // Hooked to the same `update:available → update:run → ready` path: we
+  // tag a marker so the next time the renderer transitions to ready we
+  // also fire an OS notification. Done in main rather than renderer so it
+  // works even if the user is in another app.
+  let lastReadyVersionNotified: string | null = null;
+  const watchUpdateReady = setInterval(() => {
+    if (initialTrayMode === false) return;
+    if (stagedUpdateVersion && stagedUpdateVersion !== lastReadyVersionNotified) {
+      lastReadyVersionNotified = stagedUpdateVersion;
+      notifyUpdateReady(stagedUpdateVersion);
+    }
+  }, 5_000);
+  app.on('before-quit', () => clearInterval(watchUpdateReady));
 }
 
 void main();

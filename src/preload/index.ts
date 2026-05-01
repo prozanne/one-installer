@@ -22,6 +22,10 @@ import type {
   UpdateAvailableEventT,
   UpdateCheckResT,
   UpdateRunResT,
+  AppsCheckUpdatesResT,
+  AppsUpdateRunReqT,
+  AppsUpdateRunResT,
+  AppsUpdatesAvailableEventT,
   AuthSetTokenReqT,
   AuthSetTokenResT,
   AuthClearTokenResT,
@@ -82,6 +86,22 @@ const ipcApi = {
     const listener = (_e: IpcRendererEvent, payload: UpdateAvailableEventT) => cb(payload);
     ipcRenderer.on(IpcChannels.updateAvailable, listener);
     return () => ipcRenderer.removeListener(IpcChannels.updateAvailable, listener);
+  },
+  async appsCheckUpdates(): Promise<AppsCheckUpdatesResT> {
+    return ipcRenderer.invoke(IpcChannels.appsCheckUpdates, {});
+  },
+  async appsUpdateRun(req: AppsUpdateRunReqT): Promise<AppsUpdateRunResT> {
+    return ipcRenderer.invoke(IpcChannels.appsUpdateRun, req);
+  },
+  /**
+   * Subscribe to background `apps:updatesAvailable` broadcasts. Fires after
+   * each catalog refresh that produces a *different* candidate set than the
+   * last broadcast.
+   */
+  onAppsUpdatesAvailable(cb: (ev: AppsUpdatesAvailableEventT) => void): () => void {
+    const listener = (_e: IpcRendererEvent, payload: AppsUpdatesAvailableEventT) => cb(payload);
+    ipcRenderer.on(IpcChannels.appsUpdatesAvailable, listener);
+    return () => ipcRenderer.removeListener(IpcChannels.appsUpdatesAvailable, listener);
   },
   async authSetToken(req: AuthSetTokenReqT): Promise<AuthSetTokenResT> {
     return ipcRenderer.invoke(IpcChannels.authSetToken, req);

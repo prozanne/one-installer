@@ -18,6 +18,9 @@ export const IpcChannels = {
   updateRun: 'update:run',
   updateApply: 'update:apply',
   updateAvailable: 'update:available',
+  appsCheckUpdates: 'apps:checkUpdates',
+  appsUpdateRun: 'apps:updateRun',
+  appsUpdatesAvailable: 'apps:updatesAvailable',
   authSetToken: 'auth:setToken',
   authClearToken: 'auth:clearToken',
 } as const;
@@ -262,3 +265,59 @@ export type AuthSetTokenReqT = z.infer<typeof AuthSetTokenReq>;
 export type AuthSetTokenResT = z.infer<typeof AuthSetTokenRes>;
 export type AuthClearTokenReqT = z.infer<typeof AuthClearTokenReq>;
 export type AuthClearTokenResT = z.infer<typeof AuthClearTokenRes>;
+
+// ---------------------------------------------------------------------------
+// Per-app updates (Phase 2)
+// ---------------------------------------------------------------------------
+
+const AppUpdateCandidate = z.object({
+  appId: z.string(),
+  fromVersion: z.string(),
+  toVersion: z.string(),
+  /** Display name from catalog (or installed.json fallback). */
+  displayName: z.string(),
+  /** 'app' | 'agent' — drives which catalog the install request is routed to. */
+  kind: CatalogKindSchema,
+  /** Whether the user must explicitly approve, or whether main will auto-run it. */
+  policy: z.enum(['auto', 'ask', 'manual']),
+});
+
+export const AppsCheckUpdatesReq = z.object({});
+export const AppsCheckUpdatesRes = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), candidates: z.array(AppUpdateCandidate) }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+]);
+
+/**
+ * Trigger an update install for a single app by id. Reuses the existing
+ * catalog:install pipeline (parseVdxpkg + transactional install) but skips
+ * the wizard when no new wizard step appeared since the previous install.
+ *
+ * - installed:true → silent path completed; renderer just refreshes apps:list.
+ * - installed:false + sessionId → renderer routes to /wizard with the session,
+ *   user fills the new step, then /progress as usual.
+ */
+export const AppsUpdateRunReq = z.object({ appId: z.string() });
+export const AppsUpdateRunRes = z.discriminatedUnion('ok', [
+  z.object({
+    ok: z.literal(true),
+    installed: z.boolean(),
+    sessionId: z.string().uuid().optional(),
+    manifest: ManifestSchema.optional(),
+    defaultInstallPath: z.string().optional(),
+    signatureValid: z.boolean().optional(),
+  }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+]);
+
+/** Broadcast on every catalog refresh that found at least one candidate. */
+export const AppsUpdatesAvailableEvent = z.object({
+  candidates: z.array(AppUpdateCandidate),
+});
+
+export type AppUpdateCandidateT = z.infer<typeof AppUpdateCandidate>;
+export type AppsCheckUpdatesReqT = z.infer<typeof AppsCheckUpdatesReq>;
+export type AppsCheckUpdatesResT = z.infer<typeof AppsCheckUpdatesRes>;
+export type AppsUpdateRunReqT = z.infer<typeof AppsUpdateRunReq>;
+export type AppsUpdateRunResT = z.infer<typeof AppsUpdateRunRes>;
+export type AppsUpdatesAvailableEventT = z.infer<typeof AppsUpdatesAvailableEvent>;

@@ -7,12 +7,25 @@ import { UpdateBadge } from './components/UpdateBadge';
 export function App() {
   const refreshApps = useStore((s) => s.refreshApps);
   const setProgress = useStore((s) => s.setProgress);
+  const setAppUpdates = useStore((s) => s.setAppUpdates);
+  const refreshAppUpdates = useStore((s) => s.refreshAppUpdates);
+  const appUpdatesCount = useStore((s) => s.appUpdates.length);
 
   useEffect(() => {
     void refreshApps();
+    void refreshAppUpdates();
     const off = window.vdxIpc.onProgress(setProgress);
-    return off;
-  }, [refreshApps, setProgress]);
+    // Live broadcast — main pushes a fresh candidate list whenever the
+    // catalog refresh produces a different fingerprint. Replace the store
+    // contents wholesale; the page re-renders.
+    const offUpdates = window.vdxIpc.onAppsUpdatesAvailable((ev) => {
+      setAppUpdates(ev.candidates);
+    });
+    return () => {
+      off();
+      offUpdates();
+    };
+  }, [refreshApps, refreshAppUpdates, setProgress, setAppUpdates]);
 
   return (
     <div className="flex h-full">
@@ -41,6 +54,19 @@ export function App() {
             }
           >
             Agents
+          </NavLink>
+          <NavLink
+            to="/updates"
+            className={({ isActive }) =>
+              `px-3 py-2 rounded-md flex items-center justify-between ${isActive ? 'bg-white shadow-sm' : 'hover:bg-white/60'}`
+            }
+          >
+            <span>Updates</span>
+            {appUpdatesCount > 0 && (
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-teal text-white">
+                {appUpdatesCount}
+              </span>
+            )}
           </NavLink>
           <NavLink
             to="/settings"
