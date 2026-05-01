@@ -39,28 +39,30 @@ describe('runUninstall', () => {
     const installRes = await runInstall({
       manifest: baseManifest(),
       payloadBytes: payload,
-      wizardAnswers: { installPath: '/Apps/X' },
+      wizardAnswers: { installPath: 'C:/Users/u/AppData/Local/Programs/Samsung/X' },
       platform: p,
       runner,
       hostExePath: 'C:/h.exe',
+      lockDir: '/locks',
     });
     expect(installRes.ok).toBe(true);
     if (!installRes.ok) return;
 
     expect(p.shortcuts.size).toBe(1);
-    expect(p.userPath).toContain('/Apps/X/bin');
+    expect(p.userPath).toContain('C:/Users/u/AppData/Local/Programs/Samsung/X/bin');
 
     const uninstallRes = await runUninstall({
       manifest: baseManifest(),
-      installPath: '/Apps/X',
+      installPath: 'C:/Users/u/AppData/Local/Programs/Samsung/X',
       journalEntries: installRes.value.committed.steps,
       platform: p,
       runner,
       scope: 'user',
+      lockDir: '/locks',
     });
     expect(uninstallRes.ok).toBe(true);
     expect(p.shortcuts.size).toBe(0);
-    expect(p.userPath).not.toContain('/Apps/X/bin');
+    expect(p.userPath).not.toContain('C:/Users/u/AppData/Local/Programs/Samsung/X/bin');
     expect(
       await p.registryRead(
         'HKCU',
@@ -68,6 +70,6 @@ describe('runUninstall', () => {
         'DisplayName',
       ),
     ).toBeNull();
-    expect(await p.pathExists('/Apps/X')).toBe(false);
+    expect(await p.pathExists('C:/Users/u/AppData/Local/Programs/Samsung/X')).toBe(false);
   });
 });

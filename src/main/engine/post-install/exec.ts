@@ -3,13 +3,27 @@ import type { ActionHandler } from './types';
 import type { JournalEntryT } from '@shared/schema';
 import { posix as path } from 'node:path';
 
+/**
+ * True iff `child` lies strictly under `parent` (or equals it). Defeats the
+ * `parent="C:/Apps/foo"`, `child="C:/Apps/foo-evil/x"` sibling-directory
+ * confusion that `child.startsWith(parent)` accepts.
+ */
+function isInside(child: string, parent: string): boolean {
+  const rel = path.relative(parent, child);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
 export const execHandler: ActionHandler<'exec'> = {
   type: 'exec',
   async apply(action, ctx) {
     const cmd = renderTemplate(action.cmd, ctx.templateContext, ctx.systemVars);
     const args = action.args.map((a) => renderTemplate(a, ctx.templateContext, ctx.systemVars));
     if (!path.isAbsolute(cmd)) throw new Error(`exec cmd must be absolute: ${cmd}`);
-    if (!cmd.startsWith(ctx.installPath) && !cmd.startsWith(ctx.payloadDir)) {
+    // Use path.relative-style containment, not startsWith. A naive startsWith
+    // check accepts `installPath="C:/Apps/foo"` + `cmd="C:/Apps/foo-evil/x"`
+    // (sibling directory pretending to be a child). The relative form rejects
+    // anything that escapes the prefix via `..` or is on a different root.
+    if (!isInside(cmd, ctx.installPath) && !isInside(cmd, ctx.payloadDir)) {
       throw new Error(`exec cmd must reside inside installPath or payloadDir: ${cmd}`);
     }
     const hash = await ctx.platform.fileSha256(cmd);
@@ -29,6 +43,7 @@ export const execHandler: ActionHandler<'exec'> = {
       type: 'exec',
       cmd,
       exitCode: result.exitCode,
+      timedOut: result.timedOut,
       atTs: new Date().toISOString(),
     };
     return entry;

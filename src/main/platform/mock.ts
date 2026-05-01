@@ -16,6 +16,20 @@ export interface MockPlatformOptions {
   installerVersion?: string;
   diskFreeBytes?: bigint;
   execHandler?: (input: ExecInput) => ExecResult | Promise<ExecResult>;
+  /**
+   * PIDs the mock should report as alive via `isPidAlive`.
+   * Defaults to `[process.pid]` so that a freshly-written lockfile from the
+   * current test process is treated as live (matching real-world semantics).
+   */
+  livePids?: Iterable<number>;
+  /**
+   * When false (default), HKLM writes throw `PermissionError` to mirror
+   * real-Windows behaviour where HKLM requires admin elevation. Tests that
+   * exercise machine-scope installs MUST opt in with `elevationGranted: true`
+   * so the test fails loudly if the engine ever reaches HKLM without first
+   * routing to the elevated worker.
+   */
+  elevationGranted?: boolean;
 }
 
 export class MockPlatform implements Platform {
@@ -25,6 +39,8 @@ export class MockPlatform implements Platform {
   readonly userPath: string[] = [];
   readonly machinePath: string[] = [];
   readonly execLog: ExecInput[] = [];
+  readonly livePids: Set<number>;
+  readonly elevationGranted: boolean;
   private readonly _diskFreeBytes: bigint;
   private readonly _execHandler: NonNullable<MockPlatformOptions['execHandler']>;
   readonly opts: Required<
@@ -42,6 +58,8 @@ export class MockPlatform implements Platform {
       localAppData: opts.localAppData ?? 'C:/Users/u/AppData/Local',
       installerVersion: opts.installerVersion ?? '0.1.0-dev',
     };
+    this.livePids = new Set(opts.livePids ?? [process.pid]);
+    this.elevationGranted = opts.elevationGranted ?? false;
   }
 
   systemVars() {
@@ -119,12 +137,23 @@ export class MockPlatform implements Platform {
     return this.registry.get(this.regKey(hive, key))?.get(valueName) ?? null;
   }
 
+  private requireElevationFor(hive: RegHive, op: string): void {
+    if (hive === 'HKLM' && !this.elevationGranted) {
+      const err = new Error(
+        `${op} on HKLM requires elevation (MockPlatform.elevationGranted is false)`,
+      );
+      err.name = 'PermissionError';
+      throw err;
+    }
+  }
+
   async registryWrite(
     hive: RegHive,
     key: string,
     valueName: string,
     value: RegistryValue,
   ): Promise<void> {
+    this.requireElevationFor(hive, 'registryWrite');
     const k = this.regKey(hive, key);
     let m = this.registry.get(k);
     if (!m) {
@@ -135,10 +164,12 @@ export class MockPlatform implements Platform {
   }
 
   async registryDeleteValue(hive: RegHive, key: string, valueName: string): Promise<void> {
+    this.requireElevationFor(hive, 'registryDeleteValue');
     this.registry.get(this.regKey(hive, key))?.delete(valueName);
   }
 
   async registryDeleteKey(hive: RegHive, key: string, recursive: boolean): Promise<void> {
+    this.requireElevationFor(hive, 'registryDeleteKey');
     const prefix = this.regKey(hive, key);
     if (recursive) {
       for (const k of [...this.registry.keys()]) {
@@ -172,6 +203,10 @@ export class MockPlatform implements Platform {
 
   async isProcessRunning(): Promise<{ running: boolean; pid?: number }> {
     return { running: false };
+  }
+
+  async isPidAlive(pid: number): Promise<boolean> {
+    return this.livePids.has(pid);
   }
 
   private dirname(p: string): string {

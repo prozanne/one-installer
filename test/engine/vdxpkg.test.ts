@@ -53,6 +53,28 @@ describe('parseVdxpkg', () => {
     expect(r.ok).toBe(false);
   });
 
+  it('returns err (not throw) on a buffer with PK magic but corrupt central directory', async () => {
+    // Realistic adversary: writer crashed mid-write, or transit truncation.
+    // Buffer starts with PK\x03\x04 (local file header magic) but the central
+    // directory is missing/garbled. yauzl may throw any of several errors.
+    const corrupt = Buffer.alloc(128);
+    corrupt[0] = 0x50; // 'P'
+    corrupt[1] = 0x4b; // 'K'
+    corrupt[2] = 0x03;
+    corrupt[3] = 0x04;
+    // Remaining bytes left as zeros — invalid local header + missing EOCD.
+    const { pub } = await getDevKeys();
+    const r = await parseVdxpkg(corrupt, pub);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/extract|zip/i);
+  });
+
+  it('returns err on completely empty buffer', async () => {
+    const { pub } = await getDevKeys();
+    const r = await parseVdxpkg(Buffer.alloc(0), pub);
+    expect(r.ok).toBe(false);
+  });
+
   it('reports signatureValid: false when wrong public key is provided', async () => {
     const { vdxpkgBytes } = await makeVdxpkg({
       manifest: baseManifest(),

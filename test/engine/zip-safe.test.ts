@@ -28,6 +28,16 @@ describe('checkEntryName', () => {
     expect(() => checkEntryName('foo./bar.txt')).toThrow();
     expect(() => checkEntryName('foo /bar.txt')).toThrow();
   });
+
+  it('rejects backslash separators (non-conformant per ZIP APPNOTE)', () => {
+    expect(() => checkEntryName('subdir\\file.txt')).toThrow(/backslash/i);
+    expect(() => checkEntryName('a\\..\\b.txt')).toThrow(/backslash/i);
+  });
+
+  it('rejects entries with control characters', () => {
+    expect(() => checkEntryName('a\x00b.txt')).toThrow(/control/i);
+    expect(() => checkEntryName('foo\x1fbar.txt')).toThrow(/control/i);
+  });
 });
 
 describe('extractZipSafe (happy paths)', () => {

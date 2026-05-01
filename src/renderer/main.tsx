@@ -1,11 +1,19 @@
-import { StrictMode } from 'react';
+import { StrictMode, Suspense, lazy } from 'react';
 import { createRoot } from 'react-dom/client';
 import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import './styles.css';
 import { App } from './App';
 import { HomePage } from './pages/HomePage';
-import { WizardPage } from './pages/WizardPage';
-import { ProgressPage } from './pages/ProgressPage';
+
+// HomePage is the cold-start entry — bundle eagerly. Wizard / Progress are
+// only reachable after the user opens a sideload, which already takes longer
+// than a chunk fetch, so split them out to shrink the initial paint chunk.
+const WizardPage = lazy(() =>
+  import('./pages/WizardPage').then((m) => ({ default: m.WizardPage })),
+);
+const ProgressPage = lazy(() =>
+  import('./pages/ProgressPage').then((m) => ({ default: m.ProgressPage })),
+);
 
 const root = createRoot(document.getElementById('root')!);
 root.render(
@@ -14,8 +22,22 @@ root.render(
       <Routes>
         <Route path="/" element={<App />}>
           <Route index element={<HomePage />} />
-          <Route path="wizard" element={<WizardPage />} />
-          <Route path="progress" element={<ProgressPage />} />
+          <Route
+            path="wizard"
+            element={
+              <Suspense fallback={null}>
+                <WizardPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="progress"
+            element={
+              <Suspense fallback={null}>
+                <ProgressPage />
+              </Suspense>
+            }
+          />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Route>
       </Routes>

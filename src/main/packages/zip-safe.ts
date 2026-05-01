@@ -32,6 +32,17 @@ export interface ExtractInput {
   zipBytes: Buffer;
   destDir: string;
   fs?: IFs | typeof nodeFs;
+  /**
+   * Maximum total uncompressed bytes to extract before aborting. Defends
+   * against zip-bomb payloads (compressed kilobytes → uncompressed gigabytes)
+   * that would OOM the main process or fill the user's disk before any
+   * downstream policy gets a chance to refuse.
+   *
+   * Default 4 GiB — generous enough for any legitimate VDX app (largest
+   * we've seen is ~600 MiB) but a hard ceiling that catches obvious abuse.
+   * Callers can tighten further (vdxpkg outer extract uses a smaller cap).
+   */
+  maxTotalBytes?: number;
 }
 
 export interface ExtractResult {
@@ -39,7 +50,20 @@ export interface ExtractResult {
   totalBytes: number;
 }
 
+const DEFAULT_MAX_TOTAL_BYTES = 4 * 1024 * 1024 * 1024;
+
 export function checkEntryName(name: string): void {
+  // ZIP APPNOTE.TXT §4.4.17.1 mandates forward-slash separators. Backslashes in entry
+  // names are non-conformant and would be interpreted as path separators on Windows
+  // while the POSIX zip-slip checks below would treat them as literal characters,
+  // creating a cross-platform traversal hole. Reject outright.
+  if (name.includes('\\')) {
+    throw new Error(`Refusing entry with backslash separator: ${name}`);
+  }
+  // NUL and other control bytes have no business in zip entry names.
+  if (/[\x00-\x1f]/.test(name)) {
+    throw new Error(`Refusing entry with control characters: ${name}`);
+  }
   if (name.startsWith('/') || /^[A-Za-z]:/.test(name)) {
     throw new Error(`Refusing entry with absolute path: ${name}`);
   }
@@ -79,6 +103,7 @@ export async function listZipEntries(buf: Buffer): Promise<string[]> {
 
 export async function extractZipSafe(input: ExtractInput): Promise<ExtractResult> {
   const fs = (input.fs ?? nodeFs) as IFs;
+  const maxTotal = input.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES;
   const zip = await openZip(input.zipBytes);
   const out: string[] = [];
   let totalBytes = 0;
@@ -86,6 +111,14 @@ export async function extractZipSafe(input: ExtractInput): Promise<ExtractResult
   await new Promise<void>((resolve, reject) => {
     zip.on('entry', (e: Entry) => {
       try {
+        // Defend against zip-bomb manifests: enforce the cap on the declared
+        // uncompressedSize *before* we begin streaming an entry, so a single
+        // multi-TB entry doesn't fill the disk before we notice.
+        if (totalBytes + e.uncompressedSize > maxTotal) {
+          throw new Error(
+            `Refusing zip: total uncompressed bytes would exceed cap (${maxTotal} bytes)`,
+          );
+        }
         // Detect symlinks via external file attributes (POSIX file type 0xA000).
         const externalAttr = (e.externalFileAttributes ?? 0) >>> 16;
         const fileType = externalAttr & 0xf000;

@@ -31,4 +31,20 @@ describe('verifySignature', () => {
       }),
     ).toBe(false);
   });
+
+  it('rejects degenerate (low-order) public keys without throwing', async () => {
+    // The 32-byte all-zero point is one of Ed25519's small-subgroup elements.
+    // A correctly-implemented verifier must return false (not crash, not silently
+    // accept) — this guards against an attacker substituting a low-order pubkey
+    // to make any signature appear valid.
+    const lowOrderPub = new Uint8Array(32); // all zeros
+    const fakeSig = new Uint8Array(64); // all zeros — also invalid
+    const msg = new TextEncoder().encode('any message');
+    const result = await verifySignature({
+      message: msg,
+      signature: fakeSig,
+      publicKey: lowOrderPub,
+    });
+    expect(result).toBe(false);
+  });
 });

@@ -8,3 +8,6 @@ coverage/
 test/fixtures/keys/dev-priv.bin
 test/fixtures/keys/dev-pub.bin
 *.tsbuildinfo
+# Any dev keypair stored under a userData / keys directory must never be committed.
+**/keys/dev-priv.bin
+**/keys/dev-pub.bin

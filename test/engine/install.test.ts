@@ -43,10 +43,11 @@ describe('runInstall', () => {
     const result = await runInstall({
       manifest: baseManifest(),
       payloadBytes: payload,
-      wizardAnswers: { installPath: '/Apps/X' },
+      wizardAnswers: { installPath: 'C:/Users/u/AppData/Local/Programs/Samsung/X' },
       platform: p,
       runner,
       hostExePath: 'C:/host.exe',
+      lockDir: '/locks',
     });
 
     expect(result.ok).toBe(true);
@@ -55,7 +56,7 @@ describe('runInstall', () => {
       expect(p.shortcuts.size).toBe(1);
       expect(await p.registryRead('HKCU', 'Software\\Samsung\\X', 'InstallPath')).toEqual({
         type: 'REG_SZ',
-        data: '/Apps/X',
+        data: 'C:/Users/u/AppData/Local/Programs/Samsung/X',
       });
       expect(
         await p.registryRead(
@@ -65,6 +66,66 @@ describe('runInstall', () => {
         ),
       ).toEqual({ type: 'REG_SZ', data: 'X' });
     }
+  });
+
+  it('rejects installPath outside the sanctioned prefix', async () => {
+    const p = new MockPlatform();
+    const journal = createJournalStore('/journal', p.fs);
+    const runner = createTransactionRunner({ journal });
+    const payload = await makeZip({ 'x.exe': 'binary' });
+    const result = await runInstall({
+      manifest: baseManifest(),
+      payloadBytes: payload,
+      wizardAnswers: { installPath: 'C:/Windows/System32' },
+      platform: p,
+      runner,
+      hostExePath: 'C:/host.exe',
+      lockDir: '/locks',
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/out of scope/i);
+  });
+
+  it('reclaims a stale lock from a crashed prior install', async () => {
+    // Simulate: prior install process crashed mid-way and left a lockfile
+    // behind with its (now-dead) PID. A new install must recover, not refuse.
+    const p = new MockPlatform({ livePids: [process.pid] }); // 9999 is dead
+    await p.ensureDir('/locks');
+    await p.fs.promises.writeFile(
+      '/locks/com.samsung.vdx.x.lock',
+      'pid=9999\nat=2026-01-01T00:00:00.000Z\n',
+    );
+    const journal = createJournalStore('/journal', p.fs);
+    const runner = createTransactionRunner({ journal });
+    const payload = await makeZip({ 'x.exe': 'b' });
+
+    const result = await runInstall({
+      manifest: baseManifest(),
+      payloadBytes: payload,
+      wizardAnswers: { installPath: 'C:/Users/u/AppData/Local/Programs/Samsung/X' },
+      platform: p,
+      runner,
+      hostExePath: 'C:/host.exe',
+      lockDir: '/locks',
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects UNC installPath', async () => {
+    const p = new MockPlatform();
+    const journal = createJournalStore('/journal', p.fs);
+    const runner = createTransactionRunner({ journal });
+    const payload = await makeZip({ 'x.exe': 'b' });
+    const result = await runInstall({
+      manifest: baseManifest(),
+      payloadBytes: payload,
+      wizardAnswers: { installPath: '//attacker.example/share/drop' },
+      platform: p,
+      runner,
+      hostExePath: 'C:/host.exe',
+      lockDir: '/locks',
+    });
+    expect(result.ok).toBe(false);
   });
 
   it('rolls back when an action fails', async () => {
@@ -83,10 +144,11 @@ describe('runInstall', () => {
     const result = await runInstall({
       manifest: baseManifest(),
       payloadBytes: payload,
-      wizardAnswers: { installPath: '/Apps/X' },
+      wizardAnswers: { installPath: 'C:/Users/u/AppData/Local/Programs/Samsung/X' },
       platform: p,
       runner,
       hostExePath: 'C:/host.exe',
+      lockDir: '/locks',
     });
 
     expect(result.ok).toBe(false);

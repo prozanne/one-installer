@@ -36,6 +36,59 @@ describe('installed-store', () => {
     expect(s.apps).toEqual({});
   });
 
+  it('falls back to .bak when primary is corrupt JSON', async () => {
+    const p = new MockPlatform();
+    await p.ensureDir('/state');
+    const validBak = {
+      schema: 1,
+      host: { version: HOST_VER },
+      lastCatalogSync: null,
+      settings: {
+        language: 'en',
+        updateChannel: 'stable',
+        autoUpdateHost: 'ask',
+        autoUpdateApps: 'ask',
+        cacheLimitGb: 5,
+        proxy: null,
+        telemetry: false,
+        trayMode: false,
+        developerMode: false,
+      },
+      apps: {
+        'com.samsung.vdx.x': {
+          version: '1.0.0',
+          installScope: 'user',
+          installPath: '/Apps/X',
+          wizardAnswers: { installPath: '/Apps/X' },
+          journal: [],
+          manifestSnapshot: makeManifest(),
+          installedAt: '2026-01-01T00:00:00.000Z',
+          updateChannel: 'stable',
+          autoUpdate: 'ask',
+          source: 'sideload',
+        },
+      },
+    };
+    await p.fs.promises.writeFile('/state/installed.json', '{ this is not valid json');
+    await p.fs.promises.writeFile('/state/installed.json.bak', JSON.stringify(validBak));
+    const store = createInstalledStore('/state/installed.json', p.fs, HOST_VER);
+    const s = await store.read();
+    expect(Object.keys(s.apps)).toEqual(['com.samsung.vdx.x']);
+    expect(s.apps['com.samsung.vdx.x']?.installPath).toBe('/Apps/X');
+    expect(store.lastReadStatus()).toBe('bak');
+  });
+
+  it('returns defaults when both primary and .bak are unrecoverable', async () => {
+    const p = new MockPlatform();
+    await p.ensureDir('/state');
+    await p.fs.promises.writeFile('/state/installed.json', '{ broken');
+    await p.fs.promises.writeFile('/state/installed.json.bak', '{ also broken');
+    const store = createInstalledStore('/state/installed.json', p.fs, HOST_VER);
+    const s = await store.read();
+    expect(s.apps).toEqual({});
+    expect(store.lastReadStatus()).toBe('default');
+  });
+
   it('persists app installation and read returns it', async () => {
     const p = new MockPlatform();
     await p.ensureDir('/state');

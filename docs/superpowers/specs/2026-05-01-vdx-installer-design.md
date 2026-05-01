@@ -519,7 +519,32 @@ System variables:
 
 A minimal expression grammar — no eval. Supported operators: `==`, `!=`, `&&`, `||`, `!`. Operands: template variables and string/boolean literals. Parsed by a hand-written tokenizer; rejects anything else.
 
-Examples:
+#### 3.5.1. Operator precedence
+
+Highest to lowest. Same C-family precedence as JavaScript / Python; left-associative within each level.
+
+| Precedence | Operator | Arity | Notes |
+|---|---|---|---|
+| 1 (highest) | `!` | unary | Logical NOT |
+| 2 | `==`, `!=` | binary | Equality |
+| 3 | `&&` | binary | Logical AND |
+| 4 (lowest) | `\|\|` | binary | Logical OR |
+
+Parentheses `(`…`)` override precedence and may nest arbitrarily.
+
+#### 3.5.2. Worked examples
+
+| Expression | Equivalent fully-parenthesized form |
+|---|---|
+| `{{a}} \|\| {{b}} && {{c}}` | `{{a}} \|\| ({{b}} && {{c}})` |
+| `!{{flag}} && {{x}} == 'on'` | `(!{{flag}}) && ({{x}} == 'on')` |
+| `{{a}} == 'x' \|\| {{b}} != 'y' && {{c}}` | `({{a}} == 'x') \|\| (({{b}} != 'y') && {{c}})` |
+| `!({{a}} \|\| {{b}}) && {{c}}` | parens force OR first, then `&&` over its negation |
+
+Manifest authors who are uncertain should add parentheses — they are always free, never penalised by the parser, and make intent unambiguous to reviewers.
+
+#### 3.5.3. Examples
+
 - `{{components.samples}}`
 - `{{shortcut}} != 'none'`
 - `{{components.vstPath}} && {{components.core}}`

@@ -57,4 +57,10 @@ export interface Platform {
   exec(input: ExecInput): Promise<ExecResult>;
   fileSha256(path: string): Promise<string>;
   isProcessRunning(exePath: string): Promise<{ running: boolean; pid?: number }>;
+  /**
+   * Check whether a specific PID is currently running. Used by
+   * `acquireAppLock` to recover from lockfiles abandoned by a crashed host.
+   * Distinct from `isProcessRunning(exePath)` which scans by executable.
+   */
+  isPidAlive(pid: number): Promise<boolean>;
 }

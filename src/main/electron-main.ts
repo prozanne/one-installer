@@ -49,7 +49,9 @@ function createWindow(): void {
       preload: join(__dirname, '../preload/index.mjs'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false,
+      sandbox: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
     },
   });
 
@@ -63,9 +65,40 @@ function createWindow(): void {
   }
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url);
+    if (isSafeExternalUrl(url)) void shell.openExternal(url);
     return { action: 'deny' };
   });
+
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    // Allow only the dev server URL or the local file load. Anything else —
+    // a redirect from a malicious link, a programmatic location.href set —
+    // would otherwise navigate the BrowserWindow off our origin.
+    const allowedDev = process.env['ELECTRON_RENDERER_URL'];
+    if (allowedDev && url.startsWith(allowedDev)) return;
+    if (url.startsWith('file://')) return;
+    event.preventDefault();
+  });
+
+  mainWindow.webContents.on('will-attach-webview', (event) => {
+    event.preventDefault();
+  });
+}
+
+/**
+ * Allow only http/https URLs through `shell.openExternal`. Without this gate
+ * `setWindowOpenHandler` would happily launch `file://`, `vscode://`, or
+ * other privileged Windows URI schemes — a code-execution sink reachable
+ * from any markup the renderer rendered (e.g. a malicious manifest's
+ * `supportUrl`).
+ */
+function isSafeExternalUrl(raw: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return false;
+  }
+  return parsed.protocol === 'https:' || parsed.protocol === 'http:';
 }
 
 function emitProgress(ev: ProgressEventT): void {
@@ -87,7 +120,16 @@ async function main(): Promise<void> {
   for (const dir of [paths.cacheDir, paths.logsDir, paths.locksDir, paths.journalDir, paths.keysDir]) {
     mkdirSync(dir, { recursive: true });
   }
-  const { pub: devPubKey } = await ensureDevKeyPair(paths.keysDir);
+  // Lazy-load the dev keypair: first cold start used to block ~50–100ms on
+  // Ed25519 generation before paint. We only need the pubkey at sideload
+  // verification time, so defer until then and memoise the result.
+  let devPubKeyCache: Uint8Array | null = null;
+  const getDevPubKey = async (): Promise<Uint8Array> => {
+    if (devPubKeyCache) return devPubKeyCache;
+    const { pub } = await ensureDevKeyPair(paths.keysDir);
+    devPubKeyCache = pub;
+    return pub;
+  };
 
   // Phase 1.1: still using MockPlatform during dev. Real Windows platform is Phase 1.2.
   // The installed-store, journal-store, and lock files use the real node fs through MockPlatform's
@@ -116,9 +158,13 @@ async function main(): Promise<void> {
   ipcMain.handle(IpcChannels.sideloadOpen, async (_e, raw): Promise<SideloadOpenResT> => {
     const parsed = SideloadOpenReq.safeParse(raw);
     if (!parsed.success) return { ok: false, error: 'invalid request' };
+    // Only one sideload session is meaningful at a time; clear stale entries
+    // before opening a new one so a user who opens-then-cancels-then-opens
+    // doesn't accumulate Buffer-sized leaks.
+    sideloadSessions.clear();
     try {
       const bytes = nodeFs.readFileSync(parsed.data.vdxpkgPath);
-      const result = await parseVdxpkg(bytes, devPubKey);
+      const result = await parseVdxpkg(bytes, await getDevPubKey());
       if (!result.ok) return { ok: false, error: result.error };
       const sessionId = randomUUID();
       sideloadSessions.set(sessionId, {
@@ -145,6 +191,10 @@ async function main(): Promise<void> {
     if (!parsed.success) return { ok: false, error: 'invalid request' };
     const session = sideloadSessions.get(parsed.data.sessionId);
     if (!session) return { ok: false, error: 'session expired or unknown' };
+    // Always release the session (and its full payload Buffer) when this
+    // handler returns — success, validation failure, or thrown exception.
+    // Without this the cancel-from-wizard path leaks the entire ZIP until
+    // process exit.
     try {
       emitProgress({ phase: 'extract', message: 'Extracting payload...', percent: 10 });
       const installRes = await runInstall({
@@ -154,6 +204,7 @@ async function main(): Promise<void> {
         platform,
         runner,
         hostExePath: process.execPath,
+        lockDir: paths.locksDir,
       });
       if (!installRes.ok) {
         emitProgress({ phase: 'error', message: installRes.error });
@@ -175,12 +226,13 @@ async function main(): Promise<void> {
         };
       });
       emitProgress({ phase: 'done', message: 'Installed', percent: 100 });
-      sideloadSessions.delete(parsed.data.sessionId);
       return { ok: true, installPath: installRes.value.installPath };
     } catch (e) {
       const msg = (e as Error).message;
       emitProgress({ phase: 'error', message: msg });
       return { ok: false, error: msg };
+    } finally {
+      sideloadSessions.delete(parsed.data.sessionId);
     }
   });
 
@@ -198,6 +250,7 @@ async function main(): Promise<void> {
         platform,
         runner,
         scope: app2.installScope,
+        lockDir: paths.locksDir,
       });
       if (!res.ok) return { ok: false, error: res.error };
       await installedStore.update((s) => {

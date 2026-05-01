@@ -72,4 +72,7 @@ export const windowsPlatform: Platform = {
   isProcessRunning(_exePath: string): Promise<{ running: boolean; pid?: number }> {
     return notImpl('isProcessRunning');
   },
+  isPidAlive(_pid: number): Promise<boolean> {
+    return notImpl('isPidAlive');
+  },
 };

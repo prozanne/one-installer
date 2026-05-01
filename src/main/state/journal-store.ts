@@ -1,6 +1,7 @@
 import type { IFs } from 'memfs';
 import * as nodeFs from 'node:fs';
 import { TransactionFile, type TransactionFileT } from '@shared/schema';
+import { atomicWriteJson } from './atomic-write';
 
 type FsLike = IFs | typeof nodeFs;
 
@@ -16,10 +17,11 @@ export function createJournalStore(dir: string, fs: FsLike = nodeFs): JournalSto
 
   return {
     async write(txid, tx) {
+      // Route through atomicWriteJson so the EXDEV fallback applies. Losing
+      // a journal write loses rollback; this is the more critical of the two
+      // atomic-write callsites (the other being installed.json).
       await fsP.mkdir(dir, { recursive: true });
-      const tmp = `${dir}/${txid}.json.tmp`;
-      await fsP.writeFile(tmp, JSON.stringify(tx, null, 2));
-      await fsP.rename(tmp, `${dir}/${txid}.json`);
+      await atomicWriteJson(`${dir}/${txid}.json`, tx, fs);
     },
     async read(txid) {
       try {

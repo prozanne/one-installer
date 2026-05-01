@@ -1,6 +1,6 @@
 import type { IFs } from 'memfs';
 import * as nodeFs from 'node:fs';
-import { atomicWriteJson, readJsonOrDefault } from './atomic-write';
+import { atomicWriteJson, readJsonWithBakFallback, type ReadStatus } from './atomic-write';
 import { InstalledStateSchema, type InstalledStateT } from '@shared/schema';
 
 type FsLike = IFs | typeof nodeFs;
@@ -8,6 +8,8 @@ type FsLike = IFs | typeof nodeFs;
 export interface InstalledStore {
   read(): Promise<InstalledStateT>;
   update(mut: (s: InstalledStateT) => void): Promise<InstalledStateT>;
+  /** Last read source — useful for telemetry / diagnostics that want to log when .bak was used. */
+  lastReadStatus(): ReadStatus | null;
 }
 
 export function createInstalledStore(
@@ -15,6 +17,7 @@ export function createInstalledStore(
   fs: FsLike,
   hostVersion: string,
 ): InstalledStore {
+  const bakPath = `${filePath}.bak`;
   const defaults = (): InstalledStateT => ({
     schema: 1,
     host: { version: hostVersion },
@@ -33,10 +36,36 @@ export function createInstalledStore(
     apps: {},
   });
 
+  let lastStatus: ReadStatus | null = null;
+
   const store: InstalledStore = {
     async read() {
-      const raw = await readJsonOrDefault(filePath, defaults, fs);
-      return InstalledStateSchema.parse(raw);
+      const { value, status } = await readJsonWithBakFallback<unknown>(
+        filePath,
+        bakPath,
+        defaults,
+        fs,
+      );
+      lastStatus = status;
+      // If the primary parsed but is schema-invalid, try .bak before giving up.
+      const primary = InstalledStateSchema.safeParse(value);
+      if (primary.success) return primary.data;
+      if (status === 'bak' || status === 'default') {
+        // Already on a fallback path; surface schema error so caller knows state is gone.
+        return InstalledStateSchema.parse(defaults());
+      }
+      try {
+        const bakBuf = await (fs as IFs).promises.readFile(bakPath);
+        const bakParsed = InstalledStateSchema.safeParse(JSON.parse(bakBuf.toString()));
+        if (bakParsed.success) {
+          lastStatus = 'bak';
+          return bakParsed.data;
+        }
+      } catch {
+        /* fall through */
+      }
+      lastStatus = 'default';
+      return InstalledStateSchema.parse(defaults());
     },
     async update(mut) {
       const cur = await store.read();
@@ -44,6 +73,9 @@ export function createInstalledStore(
       const validated = InstalledStateSchema.parse(cur);
       await atomicWriteJson(filePath, validated, fs);
       return validated;
+    },
+    lastReadStatus() {
+      return lastStatus;
     },
   };
   return store;

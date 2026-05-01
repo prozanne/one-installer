@@ -63,7 +63,10 @@ describe('execHandler', () => {
       },
     );
     expect(entry.type).toBe('exec');
-    if (entry.type === 'exec') expect(entry.exitCode).toBe(0);
+    if (entry.type === 'exec') {
+      expect(entry.exitCode).toBe(0);
+      expect(entry.timedOut).toBe(false);
+    }
   });
 
   it('throws when exec exits non-zero', async () => {

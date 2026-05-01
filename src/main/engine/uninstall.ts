@@ -1,5 +1,6 @@
 import type { JournalEntryT, Manifest } from '@shared/schema';
 import type { Platform } from '@main/platform';
+import { acquireAppLock } from '@main/state/lock';
 import { inverseAction } from './post-install';
 import { arpDeregister } from './post-install/arp';
 import { renderTemplate } from './template';
@@ -13,9 +14,20 @@ export interface UninstallInput {
   platform: Platform;
   runner: TransactionRunner;
   scope: 'user' | 'machine';
+  /** Same lock directory used by `runInstall`. See InstallInput.lockDir. */
+  lockDir: string;
 }
 
 export async function runUninstall(input: UninstallInput): Promise<Result<true, string>> {
+  const platformFs = (input.platform as unknown as { fs?: import('memfs').IFs }).fs;
+  const lockRes = await acquireAppLock(input.lockDir, input.manifest.id, platformFs, {
+    isPidAlive: (pid) => input.platform.isPidAlive(pid),
+  });
+  if (!lockRes.ok) {
+    return err(`Cannot acquire uninstall lock for ${input.manifest.id}: ${lockRes.error}`);
+  }
+  const lock = lockRes.value;
+
   const tx = await input.runner.begin({
     appId: input.manifest.id,
     version: input.manifest.version,
@@ -40,9 +52,11 @@ export async function runUninstall(input: UninstallInput): Promise<Result<true, 
     }
 
     await tx.commit();
+    await lock.release();
     return ok(true);
   } catch (e) {
     await tx.rollback((e as Error).message);
+    await lock.release();
     return err((e as Error).message);
   }
 }

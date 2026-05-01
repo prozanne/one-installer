@@ -2,6 +2,18 @@ import { randomUUID } from 'node:crypto';
 import type { JournalEntryT, TransactionFileT } from '@shared/schema';
 import type { JournalStore } from '@main/state/journal-store';
 
+/**
+ * Iterate journal entries in reverse-application order for rollback.
+ * Sorts by `stepOrdinal` descending; entries missing an ordinal (legacy or
+ * externally-injected) fall back to their array index — preserving the
+ * pre-stepOrdinal "reverse the array" behaviour.
+ */
+export function orderedForRollback(steps: readonly JournalEntryT[]): JournalEntryT[] {
+  const indexed = steps.map((entry, idx) => ({ entry, key: entry.stepOrdinal ?? idx }));
+  indexed.sort((a, b) => b.key - a.key);
+  return indexed.map(({ entry }) => entry);
+}
+
 export type InverseHandler = (entry: JournalEntryT) => Promise<void>;
 
 export interface TransactionRunner {
@@ -50,7 +62,11 @@ export function createTransactionRunner(opts: RunnerOptions): TransactionRunner 
       const tx: Transaction = {
         txid,
         async append(entry) {
-          file.steps.push(entry);
+          // Stamp ordinal even if the caller already set one — `append` is the
+          // single source of truth for in-tx ordering. Without this, a buggy
+          // caller could record collisions that defeat the rollback sort.
+          const stamped = { ...entry, stepOrdinal: file.steps.length } as JournalEntryT;
+          file.steps.push(stamped);
           await opts.journal.write(txid, file);
         },
         async commit() {
@@ -61,7 +77,7 @@ export function createTransactionRunner(opts: RunnerOptions): TransactionRunner 
           return file;
         },
         async rollback(reason) {
-          for (const e of [...file.steps].reverse()) {
+          for (const e of orderedForRollback(file.steps)) {
             try {
               if (opts.inverseHandler) await opts.inverseHandler(e);
             } catch {
