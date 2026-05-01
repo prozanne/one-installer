@@ -50,6 +50,17 @@ export const InstalledStateSchema = z.object({
   lastCatalogSync: z.string().datetime().nullable(),
   settings: Settings,
   apps: z.record(z.string(), InstalledApp),
+  /**
+   * Catalog freshness anchors per kind. Each entry is the highest `updatedAt`
+   * we've ever accepted for that kind; on the next fetch, a catalog with an
+   * older `updatedAt` is rejected as a replay attempt. A clock-skew tolerance
+   * (60s) is applied at compare time, not stored here.
+   * Keyed by CatalogKind ('app' | 'agent') for compatibility; absent on first
+   * launch (every catalog passes the freshness gate).
+   */
+  catalogFreshness: z
+    .record(z.enum(['app', 'agent']), z.string().datetime())
+    .optional(),
 });
 
 export type InstalledStateT = z.infer<typeof InstalledStateSchema>;

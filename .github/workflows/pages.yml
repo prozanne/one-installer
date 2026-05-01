@@ -1,0 +1,56 @@
+# Publish the standalone presentation deck under `docs/presentation/` to
+# GitHub Pages. The deck is a single self-contained `index.html` (no build
+# step, no external assets), so the workflow just uploads that one folder
+# as the entire Pages site root.
+#
+# After this workflow runs once, the deck lives at:
+#   https://<owner>.github.io/<repo>/
+#
+# Operator one-time setup: Repo → Settings → Pages → Source = "GitHub
+# Actions". Without that, the deploy step succeeds at upload but Pages
+# stays disabled.
+name: Publish presentation to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    # Only re-run when the deck or workflow itself changes — keeps the
+    # action from firing on every engine commit.
+    paths:
+      - 'docs/presentation/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Two pushes in quick succession should not race: cancel-in-progress is
+# false so the *first* deploy runs to completion, but only one queue is
+# kept around per ref.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload deck as Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/presentation
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

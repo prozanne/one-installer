@@ -36,6 +36,37 @@ const Base64PubKey = z
     { message: 'trustRoots entry must be a canonical base64-encoded 32-byte Ed25519 public key' },
   );
 
+/**
+ * Trust root rotation primitive.
+ *
+ * The original schema accepted bare base64 pubkey strings. With rotation we
+ * also accept an object form carrying a key id and optional validity bounds.
+ * `keyId` is informational (logged on use, lets operators correlate which
+ * root signed a given catalog). `notBefore`/`notAfter` are enforced at
+ * verification time against the catalog's `updatedAt`: a key with an
+ * expired `notAfter` is treated as missing — its bytes never participate
+ * in `verifySignature`. This lets an operator stage a new key alongside
+ * an old one, transition catalog publishing onto the new one, then bump
+ * `notAfter` on the old key to retire it without a host upgrade.
+ *
+ * Both forms are accepted in the same array so existing configs (bare
+ * strings) keep working unchanged.
+ */
+const TrustRootObject = z
+  .object({
+    key: Base64PubKey,
+    keyId: z.string().min(1).max(64).optional(),
+    notBefore: z.string().datetime().optional(),
+    notAfter: z.string().datetime().optional(),
+  })
+  .strict()
+  .refine(
+    (r) => !r.notBefore || !r.notAfter || Date.parse(r.notBefore) <= Date.parse(r.notAfter),
+    { message: 'notBefore must be <= notAfter' },
+  );
+
+const TrustRoot = z.union([Base64PubKey, TrustRootObject]);
+
 // ---------------------------------------------------------------------------
 // Path-shape validator (no node:path — renderer-safe)
 // ---------------------------------------------------------------------------
@@ -144,7 +175,7 @@ export const VdxConfigSchema = z.object({
   schemaVersion: z.literal(1),
   source: SourceConfig,
   agentCatalog: AgentCatalogConfig.optional(),
-  trustRoots: z.array(Base64PubKey).max(16).optional(),
+  trustRoots: z.array(TrustRoot).max(16).optional(),
   channel: z.enum(['stable', 'beta', 'internal']).default('stable'),
   proxy: ProxyConfig.optional(),
   telemetry: z.boolean().default(true),

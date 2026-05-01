@@ -1,0 +1,1053 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>VDX Installer — 발표 자료</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root {
+    --teal: #0F9488;
+    --teal-2: #14B8A6;
+    --teal-soft: rgba(15,148,136,0.10);
+    --teal-edge: rgba(15,148,136,0.30);
+    --canvas: #FBFBFA;
+    --sidebar: #F4F4F2;
+    --ink: #15171C;
+    --ink-2: #2A2D34;
+    --muted: #64748B;
+    --muted-2: #94A3B8;
+    --line: rgba(15,17,28,0.08);
+    --card: #FFFFFF;
+    --bad: #DC2626;
+    --warn: #B45309;
+    --good: #059669;
+    --code: #0B1220;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: 'Inter Tight', 'Pretendard', -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', sans-serif;
+    background: var(--canvas);
+    color: var(--ink);
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  .deck {
+    position: relative;
+    width: 100vw;
+    height: 100vh;
+    overflow: hidden;
+  }
+  .slide {
+    position: absolute;
+    inset: 0;
+    padding: 64px 80px 56px;
+    display: none;
+    overflow: hidden;
+  }
+  .slide.is-active { display: flex; flex-direction: column; }
+  .slide.dark {
+    background: var(--ink);
+    color: #F8FAFC;
+  }
+  .slide.dark h1, .slide.dark h2, .slide.dark p { color: #F8FAFC; }
+  .slide.dark .muted { color: #94A3B8; }
+  .slide.dark .card { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.08); }
+  .slide.dark code { color: #5EEAD4; background: rgba(255,255,255,0.06); }
+  .slide.dark .stat-num { color: #5EEAD4; }
+  .slide-content { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 18px; }
+  /* logo + brand */
+  .brand {
+    display: inline-flex; align-items: center; gap: 12px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .brand-mark {
+    width: 36px; height: 36px;
+    border-radius: 8px;
+    background: var(--teal-soft);
+    border: 1px solid var(--teal-edge);
+    display: inline-flex; align-items: center; justify-content: center;
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-weight: 600;
+    color: var(--teal);
+    font-size: 20px;
+  }
+  .slide.dark .brand-mark {
+    background: rgba(94,234,212,0.10);
+    border-color: rgba(94,234,212,0.30);
+    color: #5EEAD4;
+  }
+  /* eyebrow */
+  .eyebrow {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--teal);
+    margin-bottom: 8px;
+  }
+  .slide.dark .eyebrow { color: #5EEAD4; }
+  /* h1, h2, p */
+  h1 { font-size: 48px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.1; }
+  h2 { font-size: 30px; font-weight: 600; letter-spacing: -0.01em; line-height: 1.2; margin-bottom: 12px; }
+  h3 { font-size: 18px; font-weight: 600; letter-spacing: -0.005em; }
+  p { font-size: 16px; line-height: 1.55; color: var(--ink-2); max-width: 72ch; }
+  .slide.dark p { color: #CBD5E1; }
+  .lead { font-size: 22px; line-height: 1.45; color: var(--ink); max-width: 60ch; font-weight: 500; }
+  .slide.dark .lead { color: #F1F5F9; }
+  .muted { color: var(--muted); font-size: 13px; }
+  /* hr-less divider */
+  .row { display: flex; gap: 24px; align-items: stretch; }
+  .col { display: flex; flex-direction: column; gap: 14px; }
+  .grow { flex: 1; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+  .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+  .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; }
+  /* card */
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 20px 22px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .card .ttl { font-weight: 600; font-size: 15px; letter-spacing: -0.005em; }
+  .card .desc { font-size: 13px; color: var(--muted); line-height: 1.5; }
+  .card.accent { border-color: var(--teal-edge); background: var(--teal-soft); }
+  .card.outline { background: transparent; }
+  /* big stat */
+  .stat { display: flex; flex-direction: column; gap: 4px; padding: 18px 20px; background: var(--card); border: 1px solid var(--line); border-radius: 12px; }
+  .stat-num { font-size: 48px; font-weight: 700; letter-spacing: -0.03em; color: var(--teal); line-height: 1; font-family: 'JetBrains Mono', ui-monospace, monospace; }
+  .stat-label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
+  .stat-sub { font-size: 13px; color: var(--ink-2); }
+  /* code blocks */
+  pre, code { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 12.5px; }
+  pre {
+    background: var(--code); color: #E2E8F0; border-radius: 10px;
+    padding: 14px 16px; overflow: auto; line-height: 1.55;
+  }
+  pre .k { color: #5EEAD4; }
+  pre .s { color: #FCD34D; }
+  pre .c { color: #64748B; font-style: italic; }
+  pre .n { color: #93C5FD; }
+  code { background: var(--teal-soft); color: var(--teal); padding: 1px 6px; border-radius: 4px; }
+  /* checklist / pill */
+  .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 4px 10px; border-radius: 999px; background: var(--teal-soft); color: var(--teal); border: 1px solid var(--teal-edge); }
+  .pill.warn { background: rgba(180,83,9,0.08); color: var(--warn); border-color: rgba(180,83,9,0.25); }
+  .pill.bad { background: rgba(220,38,38,0.06); color: var(--bad); border-color: rgba(220,38,38,0.25); }
+  .pill.dot::before { content: ""; width: 6px; height: 6px; border-radius: 999px; background: currentColor; }
+  ul.bare { list-style: none; display: flex; flex-direction: column; gap: 10px; }
+  ul.bare li { padding-left: 20px; position: relative; font-size: 15px; line-height: 1.5; color: var(--ink-2); }
+  ul.bare li::before { content: ""; width: 6px; height: 6px; border-radius: 999px; background: var(--teal); position: absolute; left: 4px; top: 9px; }
+  .slide.dark ul.bare li { color: #CBD5E1; }
+  .slide.dark ul.bare li::before { background: #5EEAD4; }
+  /* footer / nav */
+  .deck-footer {
+    position: absolute; bottom: 16px; left: 80px; right: 80px;
+    display: flex; justify-content: space-between; align-items: center;
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 11px; color: var(--muted);
+    pointer-events: none;
+  }
+  .slide.dark .deck-footer { color: #94A3B8; }
+  .deck-nav {
+    position: absolute; bottom: 14px; right: 80px;
+    display: inline-flex; gap: 6px; pointer-events: auto;
+  }
+  .deck-nav button {
+    appearance: none; border: 1px solid var(--line); background: var(--card);
+    width: 28px; height: 28px; border-radius: 6px; cursor: pointer; color: var(--ink);
+    font-size: 14px; line-height: 1;
+  }
+  .slide.dark .deck-nav button { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.10); color: #F1F5F9; }
+  .deck-nav button:hover { border-color: var(--teal); color: var(--teal); }
+  .slide.dark .deck-nav button:hover { color: #5EEAD4; border-color: #5EEAD4; }
+  .progress {
+    position: absolute; top: 0; left: 0; right: 0; height: 3px;
+    background: transparent;
+  }
+  .progress > div { height: 100%; background: var(--teal); transition: width 0.25s ease; }
+  /* svg helpers */
+  svg.flow { width: 100%; height: auto; display: block; }
+  /* problem visual: scattered icons */
+  .scatter {
+    position: relative; flex: 1;
+    background:
+      radial-gradient(circle at 20% 30%, rgba(15,148,136,0.05), transparent 40%),
+      radial-gradient(circle at 80% 70%, rgba(15,148,136,0.05), transparent 40%);
+    border: 1px dashed var(--line);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .ic {
+    position: absolute; width: 64px; height: 64px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-weight: 600;
+    color: var(--ink-2);
+    box-shadow: 0 1px 0 rgba(15,17,28,0.04);
+  }
+  .ic.evil { color: var(--bad); }
+  .one-installer {
+    width: 200px; height: 200px;
+    background: var(--teal-soft);
+    border: 2px solid var(--teal);
+    border-radius: 24px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 8px;
+    color: var(--teal);
+  }
+  .one-installer .v { font-family: 'JetBrains Mono', ui-monospace, monospace; font-weight: 700; font-size: 80px; line-height: 0.9; }
+  .one-installer .lab { font-size: 12px; letter-spacing: 0.12em; text-transform: uppercase; }
+  /* timeline */
+  .timeline { display: grid; grid-template-columns: repeat(8, 1fr); gap: 12px; align-items: stretch; }
+  .tnode { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 4px; }
+  .tnode .h { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; color: var(--teal); }
+  .tnode .t { font-size: 13px; font-weight: 600; line-height: 1.25; }
+  .tnode .d { font-size: 11.5px; color: var(--muted); line-height: 1.35; }
+  /* phase columns */
+  .phase {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 18px 20px;
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .phase .name { font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; color: var(--teal); letter-spacing: 0.1em; text-transform: uppercase; }
+  .phase h3 { font-size: 16px; }
+  .phase ul { list-style: disc inside; color: var(--ink-2); font-size: 13.5px; line-height: 1.65; }
+  /* keyboard hint */
+  .kbd-hint {
+    position: absolute; left: 80px; bottom: 14px;
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: 10px; color: var(--muted-2); letter-spacing: 0.05em;
+  }
+  /* print: one slide per page */
+  @media print {
+    body, .deck { overflow: visible; height: auto; }
+    .slide { display: block !important; page-break-after: always; height: 100vh; }
+    .deck-footer, .deck-nav, .progress, .kbd-hint { display: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="deck" id="deck">
+  <div class="progress"><div id="progressBar"></div></div>
+
+  <!-- =================== SLIDE 1: COVER =================== -->
+  <section class="slide dark" data-title="VDX Installer">
+    <div class="slide-content" style="justify-content: center; align-items: flex-start; gap: 32px;">
+      <div class="brand"><span class="brand-mark">V</span><span style="font-size: 18px; opacity: 0.7;">vdx-installer</span></div>
+      <div>
+        <div class="eyebrow">Samsung VDX</div>
+        <h1 style="font-size: 72px; line-height: 1.05;">통합 인스톨러,<br>가볍게.</h1>
+      </div>
+      <p class="lead" style="max-width: 70ch;">
+        흩어진 앱별 인스톨러를 하나로. 사용자에겐 매끄러운 설치 경험,
+        앱 팀에겐 manifest 한 줄만. AI 어시스턴트가 패키징까지 도와줍니다.
+      </p>
+      <div style="display: flex; gap: 12px; margin-top: 8px;">
+        <span class="pill dot">Phase 1.0~1.2 + Agents 탭 + R3 하드닝</span>
+        <span class="pill dot" style="background: rgba(94,234,212,0.10); color: #5EEAD4; border-color: rgba(94,234,212,0.30);">369 / 369 tests</span>
+      </div>
+    </div>
+    <div class="deck-footer">
+      <span>2026-05-01 · Samsung VDX</span>
+      <span style="opacity: 0.6;">화살표 / 스페이스로 이동</span>
+    </div>
+  </section>
+
+  <!-- =================== SLIDE 2: PROBLEM =================== -->
+  <section class="slide" data-title="문제 정의">
+    <div class="slide-content">
+      <div class="eyebrow">왜 만드나</div>
+      <h1>"앱이 늘어날수록 인스톨러가 늘어나는" 문제</h1>
+      <div class="grid-2 grow" style="align-items: stretch;">
+        <div class="scatter">
+          <div class="ic" style="left: 8%;  top: 20%;">.exe</div>
+          <div class="ic" style="left: 28%; top: 8%;">.msi</div>
+          <div class="ic" style="left: 50%; top: 32%;">.exe</div>
+          <div class="ic" style="left: 72%; top: 12%;">.msi</div>
+          <div class="ic" style="left: 18%; top: 60%;">.exe</div>
+          <div class="ic" style="left: 60%; top: 65%;">.exe</div>
+          <div class="ic" style="left: 38%; top: 78%;">.msi</div>
+          <div class="ic evil" style="left: 78%; top: 76%;">?.exe</div>
+          <div style="position: absolute; bottom: 12px; left: 12px; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--muted);">N개 앱 → N개 인스톨러</div>
+        </div>
+        <div class="col" style="gap: 18px;">
+          <div class="card outline">
+            <div class="ttl" style="color: var(--bad);">사용자 입장</div>
+            <div class="desc">앱마다 다른 UI, 다른 권한 요구, 다른 업데이트 방식. 어느 게 진짜 Samsung 앱인지도 헷갈림.</div>
+          </div>
+          <div class="card outline">
+            <div class="ttl" style="color: var(--bad);">앱 팀 입장</div>
+            <div class="desc">매번 인스톨러 빌드/서명/배포 파이프라인을 따로 운영. 동일한 보안 요구사항을 매번 다시 구현.</div>
+          </div>
+          <div class="card outline">
+            <div class="ttl" style="color: var(--bad);">IT/보안 입장</div>
+            <div class="desc">서명 정책·롤백·로깅·삭제까지 일관성 보장이 어려움. 감사 트레일 단편화.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="deck-footer"><span>02 / 15 · 문제 정의</span></div>
+  </section>
+
+  <!-- =================== SLIDE 3: ONE-LINE DEFINITION =================== -->
+  <section class="slide" data-title="VDX Installer 정의">
+    <div class="slide-content" style="justify-content: center; gap: 24px;">
+      <div class="eyebrow">한 줄 정의</div>
+      <h1 style="font-size: 64px; line-height: 1.1; max-width: 22ch;">
+        선언적 manifest를 해석해 <span style="color: var(--teal);">설치 마법사 + 후처리까지</span> 단일 흐름으로 처리하는 Windows 통합 인스톨러.
+      </h1>
+      <p class="lead">
+        앱 팀은 <code>manifest.json</code> 하나만 작성. 사용자는 인스톨러 하나만 설치하면 됨.
+        UAD Connect / Native Access 같은 모델을 Samsung 앱 + 에이전트에 적용.
+      </p>
+    </div>
+    <div class="deck-footer"><span>03 / 15 · 정의</span></div>
+  </section>
+
+  <!-- =================== SLIDE 4: INSPIRATION =================== -->
+  <section class="slide" data-title="영감">
+    <div class="slide-content">
+      <div class="eyebrow">참고 모델</div>
+      <h1>이미 검증된 패턴</h1>
+      <p style="margin-top: 4px;">개별 인스톨러를 통합 호스트로 대체하는 모델은 프로 오디오·플러그인 생태계에서 10년 넘게 검증됨.</p>
+      <div class="grid-3 grow" style="margin-top: 12px;">
+        <div class="card">
+          <div class="ttl">UAD Connect</div>
+          <div class="desc">Universal Audio. 수십 개 DSP 플러그인을 단일 catalog UI에서 설치/업데이트/제거. 라이선스도 통합 관리.</div>
+        </div>
+        <div class="card">
+          <div class="ttl">Native Access</div>
+          <div class="desc">Native Instruments. 모든 KOMPLETE 제품의 카탈로그 + 다운로드 + 마법사 + 위치 이동을 한 앱이 처리.</div>
+        </div>
+        <div class="card">
+          <div class="ttl">iLok License Manager</div>
+          <div class="desc">Pace. 수백 개 plugin 라이선스 발급/이전을 단일 클라이언트로 통합.</div>
+        </div>
+      </div>
+      <p class="muted" style="margin-top: 8px;">VDX Installer는 같은 패턴을 Samsung 사내 앱 + AI 에이전트에 적용한다.</p>
+    </div>
+    <div class="deck-footer"><span>04 / 15 · 영감</span></div>
+  </section>
+
+  <!-- =================== SLIDE 5: CORE PRINCIPLE =================== -->
+  <section class="slide" data-title="핵심 원리">
+    <div class="slide-content">
+      <div class="eyebrow">핵심 원리</div>
+      <h1>선언적 manifest + 통합 엔진</h1>
+      <p>각 앱의 설치 방식을 코드로 적지 않고 <strong>JSON 한 장</strong>으로 선언. 호스트는 그것만 해석.</p>
+      <svg class="flow" viewBox="0 0 1100 360" style="margin-top: 14px;">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M0,0 L10,5 L0,10 z" fill="#0F9488"/>
+          </marker>
+        </defs>
+        <!-- manifest -->
+        <g transform="translate(40,80)">
+          <rect width="280" height="200" rx="12" fill="#FFFFFF" stroke="rgba(15,148,136,0.30)" stroke-width="2"/>
+          <text x="20" y="32" font-family="JetBrains Mono" font-size="11" fill="#0F9488">MANIFEST.JSON</text>
+          <text x="20" y="60" font-family="JetBrains Mono" font-size="13" fill="#15171C">id: com.samsung…</text>
+          <text x="20" y="84" font-family="JetBrains Mono" font-size="13" fill="#15171C">version: 1.2.3</text>
+          <text x="20" y="108" font-family="JetBrains Mono" font-size="13" fill="#15171C">wizard: [...]</text>
+          <text x="20" y="132" font-family="JetBrains Mono" font-size="13" fill="#15171C">install.extract: [...]</text>
+          <text x="20" y="156" font-family="JetBrains Mono" font-size="13" fill="#15171C">postInstall: [...]</text>
+          <text x="20" y="180" font-family="JetBrains Mono" font-size="13" fill="#15171C">uninstall: {...}</text>
+        </g>
+        <!-- arrow -->
+        <line x1="330" y1="180" x2="430" y2="180" stroke="#0F9488" stroke-width="2" marker-end="url(#arrow)"/>
+        <!-- engine -->
+        <g transform="translate(440,60)">
+          <rect width="280" height="240" rx="12" fill="#0F9488" />
+          <text x="20" y="32" font-family="JetBrains Mono" font-size="11" fill="rgba(255,255,255,0.7)">VDX ENGINE</text>
+          <text x="20" y="64" font-family="Inter Tight" font-size="16" fill="#FFFFFF" font-weight="600">manifest 해석</text>
+          <text x="20" y="92" font-family="Inter Tight" font-size="13" fill="rgba(255,255,255,0.85)">→ wizard UI 렌더</text>
+          <text x="20" y="116" font-family="Inter Tight" font-size="13" fill="rgba(255,255,255,0.85)">→ payload 검증</text>
+          <text x="20" y="140" font-family="Inter Tight" font-size="13" fill="rgba(255,255,255,0.85)">→ 트랜잭션 시작</text>
+          <text x="20" y="164" font-family="Inter Tight" font-size="13" fill="rgba(255,255,255,0.85)">→ 파일/레지스트리/단축키</text>
+          <text x="20" y="188" font-family="Inter Tight" font-size="13" fill="rgba(255,255,255,0.85)">→ ARP 등록</text>
+          <text x="20" y="212" font-family="Inter Tight" font-size="13" fill="rgba(255,255,255,0.85)">→ 커밋 또는 롤백</text>
+        </g>
+        <line x1="730" y1="180" x2="830" y2="180" stroke="#0F9488" stroke-width="2" marker-end="url(#arrow)"/>
+        <!-- installed -->
+        <g transform="translate(840,80)">
+          <rect width="220" height="200" rx="12" fill="#FFFFFF" stroke="rgba(15,148,136,0.30)" stroke-width="2"/>
+          <text x="20" y="32" font-family="JetBrains Mono" font-size="11" fill="#0F9488">설치 완료</text>
+          <text x="20" y="64" font-family="Inter Tight" font-size="14" fill="#15171C">✓ 파일 배치</text>
+          <text x="20" y="92" font-family="Inter Tight" font-size="14" fill="#15171C">✓ 단축키</text>
+          <text x="20" y="120" font-family="Inter Tight" font-size="14" fill="#15171C">✓ 레지스트리</text>
+          <text x="20" y="148" font-family="Inter Tight" font-size="14" fill="#15171C">✓ ARP 등록</text>
+          <text x="20" y="176" font-family="Inter Tight" font-size="14" fill="#15171C">✓ journal 보관</text>
+        </g>
+      </svg>
+      <p class="muted" style="margin-top: 14px;">개별 앱 인스톨러 EXE 불필요. 모든 후처리(레지스트리/PATH/단축키/exec)는 manifest 액션으로 표현.</p>
+    </div>
+    <div class="deck-footer"><span>05 / 15 · 핵심 원리</span></div>
+  </section>
+
+  <!-- =================== SLIDE 6: ARCHITECTURE =================== -->
+  <section class="slide dark" data-title="아키텍처">
+    <div class="slide-content">
+      <div class="eyebrow">아키텍처</div>
+      <h1>4-프로세스 모델 + GitHub-only 공급망</h1>
+      <svg class="flow" viewBox="0 0 1200 440" style="margin-top: 12px;">
+        <defs>
+          <marker id="arrow2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M0,0 L10,5 L0,10 z" fill="#5EEAD4"/>
+          </marker>
+        </defs>
+        <!-- Host box -->
+        <rect x="20" y="20" width="780" height="270" rx="14" fill="rgba(94,234,212,0.06)" stroke="rgba(94,234,212,0.25)"/>
+        <text x="40" y="46" font-family="JetBrains Mono" font-size="11" fill="#5EEAD4">VDX INSTALLER · ELECTRON · WINDOWS NSIS</text>
+        <!-- Renderer -->
+        <g transform="translate(50,68)">
+          <rect width="220" height="80" rx="10" fill="rgba(255,255,255,0.06)" stroke="rgba(255,255,255,0.10)"/>
+          <text x="14" y="24" font-family="JetBrains Mono" font-size="10" fill="#94A3B8">RENDERER (REACT/TS)</text>
+          <text x="14" y="46" font-family="Inter Tight" font-size="13" fill="#F1F5F9">Apps / Agents / Wizard</text>
+          <text x="14" y="64" font-family="Inter Tight" font-size="13" fill="#F1F5F9">Progress / Settings</text>
+        </g>
+        <!-- Preload -->
+        <g transform="translate(290,68)">
+          <rect width="180" height="80" rx="10" fill="rgba(255,255,255,0.06)" stroke="rgba(255,255,255,0.10)"/>
+          <text x="14" y="24" font-family="JetBrains Mono" font-size="10" fill="#94A3B8">PRELOAD</text>
+          <text x="14" y="46" font-family="Inter Tight" font-size="13" fill="#F1F5F9">contextBridge</text>
+          <text x="14" y="64" font-family="Inter Tight" font-size="13" fill="#F1F5F9">zod-validated IPC</text>
+        </g>
+        <!-- Main -->
+        <g transform="translate(490,68)">
+          <rect width="290" height="160" rx="10" fill="rgba(255,255,255,0.06)" stroke="rgba(255,255,255,0.10)"/>
+          <text x="14" y="24" font-family="JetBrains Mono" font-size="10" fill="#94A3B8">MAIN PROCESS (NODE)</text>
+          <text x="14" y="46" font-family="Inter Tight" font-size="13" fill="#F1F5F9">· catalog sync</text>
+          <text x="14" y="64" font-family="Inter Tight" font-size="13" fill="#F1F5F9">· streamed download + verify</text>
+          <text x="14" y="82" font-family="Inter Tight" font-size="13" fill="#F1F5F9">· manifest engine</text>
+          <text x="14" y="100" font-family="Inter Tight" font-size="13" fill="#F1F5F9">· transaction + journal</text>
+          <text x="14" y="118" font-family="Inter Tight" font-size="13" fill="#F1F5F9">· installed.json (atomic)</text>
+          <text x="14" y="136" font-family="Inter Tight" font-size="13" fill="#F1F5F9">· progress throttle 30Hz</text>
+        </g>
+        <!-- Elevated worker -->
+        <g transform="translate(50,170)">
+          <rect width="420" height="100" rx="10" fill="rgba(220,38,38,0.10)" stroke="rgba(220,38,38,0.30)"/>
+          <text x="14" y="24" font-family="JetBrains Mono" font-size="10" fill="#FCA5A5">ELEVATED WORKER (UAC, ON DEMAND)</text>
+          <text x="14" y="46" font-family="Inter Tight" font-size="13" fill="#F8FAFC">HKLM 쓰기 · Program Files 설치 · 머신 PATH</text>
+          <text x="14" y="64" font-family="Inter Tight" font-size="13" fill="#F8FAFC">parent ↔ worker stdio (HMAC 서명)</text>
+          <text x="14" y="82" font-family="Inter Tight" font-size="13" fill="#F8FAFC">권한 필요한 작업만 위임. 일반 작업은 일반 권한.</text>
+        </g>
+        <!-- arrows -->
+        <line x1="270" y1="108" x2="290" y2="108" stroke="#5EEAD4" stroke-width="1.5" marker-end="url(#arrow2)"/>
+        <line x1="470" y1="108" x2="490" y2="108" stroke="#5EEAD4" stroke-width="1.5" marker-end="url(#arrow2)"/>
+        <line x1="490" y1="220" x2="470" y2="220" stroke="#FCA5A5" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrow2)"/>
+        <!-- State box -->
+        <g transform="translate(820,68)">
+          <rect width="230" height="160" rx="10" fill="rgba(94,234,212,0.06)" stroke="rgba(94,234,212,0.25)"/>
+          <text x="14" y="24" font-family="JetBrains Mono" font-size="10" fill="#5EEAD4">%APPDATA%/VDX-INSTALLER/</text>
+          <text x="14" y="48" font-family="Inter Tight" font-size="13" fill="#F1F5F9">installed.json</text>
+          <text x="14" y="68" font-family="Inter Tight" font-size="13" fill="#F1F5F9">cache/ (catalog + payload)</text>
+          <text x="14" y="88" font-family="Inter Tight" font-size="13" fill="#F1F5F9">journal/ (in-flight tx)</text>
+          <text x="14" y="108" font-family="Inter Tight" font-size="13" fill="#F1F5F9">locks/ (per-app advisory)</text>
+          <text x="14" y="128" font-family="Inter Tight" font-size="13" fill="#F1F5F9">logs/ (rolling, redacted)</text>
+        </g>
+        <!-- GitHub -->
+        <g transform="translate(820,260)">
+          <rect width="230" height="170" rx="10" fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.10)"/>
+          <text x="14" y="24" font-family="JetBrains Mono" font-size="10" fill="#94A3B8">GITHUB</text>
+          <text x="14" y="48" font-family="Inter Tight" font-size="13" fill="#F1F5F9">samsung/vdx-catalog</text>
+          <text x="14" y="68" font-family="Inter Tight" font-size="13" fill="#F1F5F9">samsung/agent-catalog</text>
+          <text x="14" y="88" font-family="Inter Tight" font-size="13" fill="#F1F5F9" style="font-style:italic; opacity:0.85">  (GitHub Pages)</text>
+          <text x="14" y="112" font-family="Inter Tight" font-size="13" fill="#F1F5F9">samsung/&lt;app-A&gt;…</text>
+          <text x="14" y="132" font-family="Inter Tight" font-size="13" fill="#F1F5F9" style="opacity:0.85">  (per-app releases)</text>
+          <text x="14" y="156" font-family="Inter Tight" font-size="13" fill="#F1F5F9">samsung/vdx-installer</text>
+        </g>
+        <!-- arrow main → state, main → github -->
+        <line x1="780" y1="148" x2="820" y2="148" stroke="#5EEAD4" stroke-width="1.5" marker-end="url(#arrow2)"/>
+        <line x1="780" y1="200" x2="820" y2="320" stroke="#5EEAD4" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrow2)"/>
+      </svg>
+    </div>
+    <div class="deck-footer"><span>06 / 15 · 아키텍처</span></div>
+  </section>
+
+  <!-- =================== SLIDE 7: MANIFEST =================== -->
+  <section class="slide" data-title="manifest 구조">
+    <div class="slide-content">
+      <div class="eyebrow">manifest.json</div>
+      <h1>설치를 코드가 아니라 "선언"으로 표현</h1>
+      <div class="grid-2 grow" style="gap: 28px; margin-top: 6px;">
+        <pre style="font-size: 12px;"><span class="c">// 발췌</span>
+{
+  <span class="k">"id"</span>: <span class="s">"com.samsung.vdx.exampleapp"</span>,
+  <span class="k">"version"</span>: <span class="s">"1.2.3"</span>,
+  <span class="k">"name"</span>: { <span class="k">"ko"</span>: <span class="s">"예제 앱"</span>, <span class="k">"default"</span>: <span class="s">"Example"</span> },
+  <span class="k">"installScope"</span>: { <span class="k">"supports"</span>: [<span class="s">"user"</span>], <span class="k">"default"</span>: <span class="s">"user"</span> },
+
+  <span class="c">// 마법사 — 6가지 step 타입 (license, path, checkboxGroup,</span>
+  <span class="c">//                       select, text, summary)</span>
+  <span class="k">"wizard"</span>: [
+    { <span class="k">"type"</span>: <span class="s">"license"</span>, <span class="k">"id"</span>: <span class="s">"eula"</span>, <span class="k">"fileFromPayload"</span>: <span class="s">"EULA.txt"</span> },
+    { <span class="k">"type"</span>: <span class="s">"path"</span>, <span class="k">"id"</span>: <span class="s">"installPath"</span>, <span class="k">"default"</span>: <span class="s">"{LocalAppData}/…"</span> },
+    { <span class="k">"type"</span>: <span class="s">"checkboxGroup"</span>, <span class="k">"id"</span>: <span class="s">"components"</span>, <span class="k">"items"</span>: [<span class="c">/* … */</span>] },
+    { <span class="k">"type"</span>: <span class="s">"summary"</span> }
+  ],
+
+  <span class="c">// 후처리 — 4가지 액션 (shortcut, registry, envPath, exec)</span>
+  <span class="k">"postInstall"</span>: [
+    { <span class="k">"type"</span>: <span class="s">"shortcut"</span>, <span class="k">"where"</span>: <span class="s">"desktop"</span>,
+      <span class="k">"target"</span>: <span class="s">"{{installPath}}/x.exe"</span>, <span class="k">"name"</span>: <span class="s">"Example"</span> },
+    { <span class="k">"type"</span>: <span class="s">"registry"</span>, <span class="k">"hive"</span>: <span class="s">"HKCU"</span>,
+      <span class="k">"key"</span>: <span class="s">"Software\\Samsung\\X"</span>,
+      <span class="k">"values"</span>: { <span class="k">"InstallPath"</span>: { <span class="k">"type"</span>: <span class="s">"REG_SZ"</span>,
+                                <span class="k">"data"</span>: <span class="s">"{{installPath}}"</span> } } },
+    { <span class="k">"type"</span>: <span class="s">"exec"</span>, <span class="k">"cmd"</span>: <span class="s">"{{installPath}}/post.exe"</span>,
+      <span class="k">"timeoutSec"</span>: <span class="n">30</span>,
+      <span class="k">"allowedHashes"</span>: [<span class="s">"sha256:abc…"</span>] }
+  ]
+}</pre>
+        <div class="col">
+          <div class="card outline">
+            <div class="ttl">Wizard step 6 종</div>
+            <div class="desc">
+              <code>license</code> · <code>path</code> · <code>checkboxGroup</code> ·
+              <code>select</code> · <code>text</code> · <code>summary</code>.
+              그 외 타입은 schema 거부.
+            </div>
+          </div>
+          <div class="card outline">
+            <div class="ttl">PostInstall action 4 종</div>
+            <div class="desc">
+              <code>shortcut</code>, <code>registry</code>, <code>envPath</code>, <code>exec</code>.
+              임의 셸 실행 금지. exec는 sha256 화이트리스트 필수.
+            </div>
+          </div>
+          <div class="card outline">
+            <div class="ttl"><code>{{var}}</code> + <code>when</code> 표현식</div>
+            <div class="desc">
+              wizard 답변 → 액션에 주입. <code>when</code>은 한정된 grammar(<code>== != &amp;&amp; || !</code>) 의 hand-written parser. <code>eval</code> 금지.
+            </div>
+          </div>
+          <div class="card outline">
+            <div class="ttl">strict mode + 컨트롤 문자 차단</div>
+            <div class="desc">
+              모든 manifest 문자열은 NUL/제어문자 거부 (Win32 API 잘림 방지).
+              shortcut name은 추가로 path-separator 차단 (디렉토리 escape 방지).
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="deck-footer"><span>07 / 15 · manifest 구조</span></div>
+  </section>
+
+  <!-- =================== SLIDE 8: WIZARD FLOW =================== -->
+  <section class="slide" data-title="설치 마법사">
+    <div class="slide-content">
+      <div class="eyebrow">설치 마법사</div>
+      <h1>모든 앱이 같은 흐름으로 설치됨</h1>
+      <p>각 앱은 wizard step만 선언. UI는 호스트가 일관되게 렌더 → 사용자는 항상 같은 모양의 화면을 본다.</p>
+      <svg class="flow" viewBox="0 0 1100 220" style="margin-top: 16px;">
+        <defs>
+          <marker id="ar3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M0,0 L10,5 L0,10 z" fill="#0F9488"/>
+          </marker>
+        </defs>
+        <g font-family="Inter Tight" font-size="13" fill="#15171C">
+        <!-- step boxes -->
+        <g transform="translate(20,60)">
+          <rect width="160" height="100" rx="10" fill="#FFFFFF" stroke="rgba(15,148,136,0.30)"/>
+          <text x="14" y="26" font-family="JetBrains Mono" font-size="10" fill="#0F9488">01</text>
+          <text x="14" y="50" font-weight="600">License</text>
+          <text x="14" y="72" font-size="11" fill="#64748B">EULA scroll → accept</text>
+        </g>
+        <line x1="180" y1="110" x2="200" y2="110" stroke="#0F9488" stroke-width="2" marker-end="url(#ar3)"/>
+        <g transform="translate(200,60)">
+          <rect width="160" height="100" rx="10" fill="#FFFFFF" stroke="rgba(15,148,136,0.30)"/>
+          <text x="14" y="26" font-family="JetBrains Mono" font-size="10" fill="#0F9488">02</text>
+          <text x="14" y="50" font-weight="600">Path</text>
+          <text x="14" y="72" font-size="11" fill="#64748B">install location</text>
+        </g>
+        <line x1="360" y1="110" x2="380" y2="110" stroke="#0F9488" stroke-width="2" marker-end="url(#ar3)"/>
+        <g transform="translate(380,60)">
+          <rect width="160" height="100" rx="10" fill="#FFFFFF" stroke="rgba(15,148,136,0.30)"/>
+          <text x="14" y="26" font-family="JetBrains Mono" font-size="10" fill="#0F9488">03</text>
+          <text x="14" y="50" font-weight="600">CheckboxGroup</text>
+          <text x="14" y="72" font-size="11" fill="#64748B">옵션 컴포넌트 선택</text>
+        </g>
+        <line x1="540" y1="110" x2="560" y2="110" stroke="#0F9488" stroke-width="2" marker-end="url(#ar3)"/>
+        <g transform="translate(560,60)">
+          <rect width="160" height="100" rx="10" fill="#FFFFFF" stroke="rgba(15,148,136,0.30)"/>
+          <text x="14" y="26" font-family="JetBrains Mono" font-size="10" fill="#0F9488">04</text>
+          <text x="14" y="50" font-weight="600">Select</text>
+          <text x="14" y="72" font-size="11" fill="#64748B">단축키 모드</text>
+        </g>
+        <line x1="720" y1="110" x2="740" y2="110" stroke="#0F9488" stroke-width="2" marker-end="url(#ar3)"/>
+        <g transform="translate(740,60)">
+          <rect width="160" height="100" rx="10" fill="#FFFFFF" stroke="rgba(15,148,136,0.30)"/>
+          <text x="14" y="26" font-family="JetBrains Mono" font-size="10" fill="#0F9488">05</text>
+          <text x="14" y="50" font-weight="600">Text</text>
+          <text x="14" y="72" font-size="11" fill="#64748B">디바이스 nickname</text>
+        </g>
+        <line x1="900" y1="110" x2="920" y2="110" stroke="#0F9488" stroke-width="2" marker-end="url(#ar3)"/>
+        <g transform="translate(920,60)">
+          <rect width="160" height="100" rx="10" fill="#0F9488"/>
+          <text x="14" y="26" font-family="JetBrains Mono" font-size="10" fill="rgba(255,255,255,0.7)">06</text>
+          <text x="14" y="50" font-weight="600" fill="#FFFFFF">Summary</text>
+          <text x="14" y="72" font-size="11" fill="rgba(255,255,255,0.85)">최종 확인 + Install</text>
+        </g>
+        </g>
+      </svg>
+      <div class="grid-3" style="margin-top: 22px;">
+        <div class="card outline">
+          <div class="ttl">업데이트 시 답변 재사용</div>
+          <div class="desc">새 manifest의 step 중 <em>id+type</em> 같은 항목은 묻지 않고 재사용. 새/변경된 step만 표시. summary만 남으면 마법사 통째로 스킵.</div>
+        </div>
+        <div class="card outline">
+          <div class="ttl">runtime 검증</div>
+          <div class="desc">각 step의 답변은 zod schema + regex로 검증. 빈 path / 잘못된 텍스트 / 필수 체크박스 미선택 → 즉시 에러.</div>
+        </div>
+        <div class="card outline">
+          <div class="ttl">i18n ready</div>
+          <div class="desc">label/option label은 <code>{ ko, en, default }</code> 형태. 시스템 로캘 따라 자동 선택, fallback 보장.</div>
+        </div>
+      </div>
+    </div>
+    <div class="deck-footer"><span>08 / 15 · 마법사</span></div>
+  </section>
+
+  <!-- =================== SLIDE 9: TRANSACTION =================== -->
+  <section class="slide" data-title="트랜잭션 + 롤백">
+    <div class="slide-content">
+      <div class="eyebrow">신뢰성</div>
+      <h1>트랜잭션 + journal 기반 원자적 설치</h1>
+      <p>설치 도중 실패 / 강제 종료 / 정전 어떤 상황에서도 시스템을 원래 상태로 복구.</p>
+      <svg class="flow" viewBox="0 0 1100 280" style="margin-top: 14px;">
+        <defs>
+          <marker id="ar4" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M0,0 L10,5 L0,10 z" fill="#0F9488"/>
+          </marker>
+          <marker id="ar4r" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M0,0 L10,5 L0,10 z" fill="#DC2626"/>
+          </marker>
+        </defs>
+        <!-- begin -->
+        <g transform="translate(20,40)">
+          <rect width="180" height="60" rx="8" fill="#FFFFFF" stroke="rgba(15,148,136,0.30)"/>
+          <text x="14" y="22" font-family="JetBrains Mono" font-size="10" fill="#0F9488">BEGIN TX</text>
+          <text x="14" y="44" font-size="13">journal/&lt;uuid&gt;.json</text>
+        </g>
+        <line x1="200" y1="70" x2="220" y2="70" stroke="#0F9488" stroke-width="2" marker-end="url(#ar4)"/>
+        <g transform="translate(220,40)">
+          <rect width="180" height="60" rx="8" fill="#FFFFFF" stroke="rgba(15,148,136,0.30)"/>
+          <text x="14" y="22" font-family="JetBrains Mono" font-size="10" fill="#0F9488">EXTRACT</text>
+          <text x="14" y="44" font-size="13">payload → installPath</text>
+        </g>
+        <line x1="400" y1="70" x2="420" y2="70" stroke="#0F9488" stroke-width="2" marker-end="url(#ar4)"/>
+        <g transform="translate(420,40)">
+          <rect width="200" height="60" rx="8" fill="#FFFFFF" stroke="rgba(15,148,136,0.30)"/>
+          <text x="14" y="22" font-family="JetBrains Mono" font-size="10" fill="#0F9488">RUN ACTIONS</text>
+          <text x="14" y="44" font-size="13">shortcut · reg · env · exec</text>
+        </g>
+        <line x1="620" y1="70" x2="640" y2="70" stroke="#0F9488" stroke-width="2" marker-end="url(#ar4)"/>
+        <g transform="translate(640,40)">
+          <rect width="180" height="60" rx="8" fill="#FFFFFF" stroke="rgba(15,148,136,0.30)"/>
+          <text x="14" y="22" font-family="JetBrains Mono" font-size="10" fill="#0F9488">REGISTER ARP</text>
+          <text x="14" y="44" font-size="13">Apps &amp; features 등록</text>
+        </g>
+        <line x1="820" y1="70" x2="840" y2="70" stroke="#0F9488" stroke-width="2" marker-end="url(#ar4)"/>
+        <g transform="translate(840,40)">
+          <rect width="220" height="60" rx="8" fill="#0F9488"/>
+          <text x="14" y="22" font-family="JetBrains Mono" font-size="10" fill="rgba(255,255,255,0.7)">COMMIT</text>
+          <text x="14" y="44" font-size="13" fill="#FFFFFF">installed.json atomic write</text>
+        </g>
+        <!-- failure path -->
+        <line x1="320" y1="100" x2="320" y2="160" stroke="#DC2626" stroke-width="2" stroke-dasharray="4,3" marker-end="url(#ar4r)"/>
+        <line x1="520" y1="100" x2="520" y2="160" stroke="#DC2626" stroke-width="2" stroke-dasharray="4,3" marker-end="url(#ar4r)"/>
+        <line x1="730" y1="100" x2="730" y2="160" stroke="#DC2626" stroke-width="2" stroke-dasharray="4,3" marker-end="url(#ar4r)"/>
+        <g transform="translate(220,170)">
+          <rect width="600" height="76" rx="10" fill="rgba(220,38,38,0.06)" stroke="rgba(220,38,38,0.30)"/>
+          <text x="20" y="24" font-family="JetBrains Mono" font-size="10" fill="#DC2626">ROLLBACK · stepOrdinal 역순</text>
+          <text x="20" y="48" font-size="13" fill="#15171C">journal 항목을 역순으로 inverse 적용 → 시스템 상태 복원</text>
+          <text x="20" y="66" font-size="11" fill="#64748B">shortcut 삭제 · 레지스트리 복원 · env path 제거 · 추출 파일 삭제</text>
+        </g>
+      </svg>
+      <div class="grid-3" style="margin-top: 14px;">
+        <div class="card outline">
+          <div class="ttl">stepOrdinal 정렬</div>
+          <div class="desc">journal 외부 변조에도 강함. <code>.steps[]</code>가 섞여 있어도 stepOrdinal 내림차순으로 정확히 역재생.</div>
+        </div>
+        <div class="card outline">
+          <div class="ttl">크래시 복구</div>
+          <div class="desc">호스트가 강제 종료되면 다음 부팅 때 journal/ 디렉토리에서 미완료 트랜잭션 자동 감지 → 사용자 동의 후 정리.</div>
+        </div>
+        <div class="card outline">
+          <div class="ttl">Per-app advisory lock</div>
+          <div class="desc"><code>locks/&lt;app-id&gt;.lock</code> 으로 동일 앱 동시 설치 차단. 죽은 PID 자동 회수.</div>
+        </div>
+      </div>
+    </div>
+    <div class="deck-footer"><span>09 / 15 · 트랜잭션</span></div>
+  </section>
+
+  <!-- =================== SLIDE 10: TRUST CHAIN =================== -->
+  <section class="slide dark" data-title="신뢰 체인">
+    <div class="slide-content">
+      <div class="eyebrow">보안</div>
+      <h1>HSM → 코드사인 + Ed25519 → 호스트</h1>
+      <p>두 개의 독립된 신뢰 경로. 어느 한쪽이 깨져도 다른 쪽이 catalog/manifest/payload 변조를 잡아냄.</p>
+      <svg class="flow" viewBox="0 0 1100 320" style="margin-top: 16px;">
+        <defs>
+          <marker id="ar5" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M0,0 L10,5 L0,10 z" fill="#5EEAD4"/>
+          </marker>
+        </defs>
+        <!-- HSM -->
+        <g transform="translate(20,30)">
+          <rect width="220" height="100" rx="10" fill="rgba(220,38,38,0.10)" stroke="rgba(220,38,38,0.40)"/>
+          <text x="14" y="24" font-family="JetBrains Mono" font-size="10" fill="#FCA5A5">CLOUD HSM (KMS)</text>
+          <text x="14" y="50" font-family="Inter Tight" font-size="14" fill="#F1F5F9" font-weight="600">Authenticode EV cert</text>
+          <text x="14" y="78" font-family="Inter Tight" font-size="14" fill="#F1F5F9" font-weight="600">VDX Ed25519 priv key</text>
+        </g>
+        <!-- arrows from HSM -->
+        <line x1="240" y1="60" x2="380" y2="60" stroke="#5EEAD4" stroke-width="1.5" marker-end="url(#ar5)"/>
+        <line x1="240" y1="100" x2="380" y2="180" stroke="#5EEAD4" stroke-width="1.5" marker-end="url(#ar5)"/>
+        <text x="270" y="48" font-family="JetBrains Mono" font-size="11" fill="#94A3B8">signtool</text>
+        <text x="270" y="160" font-family="JetBrains Mono" font-size="11" fill="#94A3B8">CI sign workflow</text>
+        <!-- Host EXE -->
+        <g transform="translate(380,40)">
+          <rect width="280" height="80" rx="10" fill="rgba(94,234,212,0.06)" stroke="rgba(94,234,212,0.30)"/>
+          <text x="14" y="24" font-family="JetBrains Mono" font-size="10" fill="#5EEAD4">vdx-installer.exe</text>
+          <text x="14" y="50" font-family="Inter Tight" font-size="14" fill="#F1F5F9">Authenticode 서명됨</text>
+          <text x="14" y="68" font-family="Inter Tight" font-size="11" fill="#94A3B8">SmartScreen / UAC 신뢰 ✓</text>
+        </g>
+        <!-- Catalog + Manifest -->
+        <g transform="translate(380,160)">
+          <rect width="280" height="100" rx="10" fill="rgba(94,234,212,0.06)" stroke="rgba(94,234,212,0.30)"/>
+          <text x="14" y="24" font-family="JetBrains Mono" font-size="10" fill="#5EEAD4">CATALOG.JSON + MANIFEST.JSON</text>
+          <text x="14" y="50" font-family="Inter Tight" font-size="14" fill="#F1F5F9">Ed25519 sig (.sig 사이드카)</text>
+          <text x="14" y="74" font-family="Inter Tight" font-size="11" fill="#94A3B8">trust-root any-match-wins</text>
+        </g>
+        <!-- Embedded pubkey -->
+        <g transform="translate(700,90)">
+          <rect width="240" height="120" rx="10" fill="rgba(94,234,212,0.10)" stroke="rgba(94,234,212,0.40)"/>
+          <text x="14" y="24" font-family="JetBrains Mono" font-size="10" fill="#5EEAD4">EMBEDDED IN HOST</text>
+          <text x="14" y="50" font-family="Inter Tight" font-size="14" fill="#F1F5F9" font-weight="600">VDX Ed25519 pubkey</text>
+          <text x="14" y="74" font-family="Inter Tight" font-size="11" fill="#CBD5E1">verify ← catalog.sig</text>
+          <text x="14" y="92" font-family="Inter Tight" font-size="11" fill="#CBD5E1">verify ← manifest.sig</text>
+        </g>
+        <line x1="660" y1="90" x2="700" y2="120" stroke="#5EEAD4" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#ar5)"/>
+        <line x1="660" y1="200" x2="700" y2="170" stroke="#5EEAD4" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#ar5)"/>
+        <!-- Payload sha -->
+        <g transform="translate(960,90)">
+          <rect width="120" height="120" rx="10" fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.10)"/>
+          <text x="14" y="24" font-family="JetBrains Mono" font-size="10" fill="#94A3B8">PAYLOAD</text>
+          <text x="14" y="50" font-family="Inter Tight" font-size="13" fill="#F1F5F9">sha256</text>
+          <text x="14" y="72" font-family="Inter Tight" font-size="10" fill="#94A3B8">manifest 안에 박힘</text>
+          <text x="14" y="98" font-family="Inter Tight" font-size="10" fill="#94A3B8">스트리밍 검증</text>
+        </g>
+        <line x1="940" y1="150" x2="960" y2="150" stroke="#5EEAD4" stroke-width="1.5" marker-end="url(#ar5)"/>
+      </svg>
+      <div class="grid-4" style="margin-top: 18px;">
+        <div class="card">
+          <div class="ttl">exec hash 화이트리스트</div>
+          <div class="desc">postInstall.exec 는 sha256 매칭만 실행. 임의 셸·파라미터 금지.</div>
+        </div>
+        <div class="card">
+          <div class="ttl">Sideload 경로 allowlist</div>
+          <div class="desc"><code>sideload:open</code>은 picker가 발급한 경로만 1회 허용.</div>
+        </div>
+        <div class="card">
+          <div class="ttl">CSP + sandboxed renderer</div>
+          <div class="desc">production: <code>connect-src 'none'</code>. renderer는 IPC 외 어떤 네트워크도 못 함.</div>
+        </div>
+        <div class="card">
+          <div class="ttl">로그 redaction</div>
+          <div class="desc">GH 토큰, Bearer, hex key, Slack/AWS 키, 홈 경로 자동 마스킹.</div>
+        </div>
+      </div>
+    </div>
+    <div class="deck-footer"><span>10 / 15 · 신뢰 체인</span></div>
+  </section>
+
+  <!-- =================== SLIDE 11: APPS + AGENTS =================== -->
+  <section class="slide" data-title="Apps + Agents 탭">
+    <div class="slide-content">
+      <div class="eyebrow">두 카탈로그</div>
+      <h1>Apps 탭과 Agents 탭, 같은 엔진</h1>
+      <p>앱과 AI 에이전트를 한 인스톨러에서. 카탈로그는 분리되어 있지만 (앱 카탈로그 vs agent-catalog), 설치 마법사 / 트랜잭션 / 보안 가드는 완전히 동일.</p>
+      <div class="grid-2 grow" style="gap: 28px; margin-top: 12px;">
+        <!-- Apps tab mock -->
+        <div class="card outline" style="padding: 0; overflow: hidden;">
+          <div style="padding: 14px 18px; border-bottom: 1px solid var(--line); background: var(--sidebar);">
+            <div class="brand"><span class="brand-mark" style="width: 26px; height: 26px; font-size: 14px;">V</span><span style="font-size: 13px;">vdx-installer · Apps</span></div>
+          </div>
+          <div style="padding: 16px 18px; display: flex; flex-direction: column; gap: 10px;">
+            <div style="display: flex; gap: 10px; align-items: center;"><div style="width: 28px; height: 28px; border-radius: 6px; background: var(--teal-soft); display: flex; align-items: center; justify-content: center; color: var(--teal); font-family: 'JetBrains Mono', monospace; font-weight: 600; font-size: 12px;">A</div><div style="font-size: 13px;"><strong>Audio Lab</strong> · v2.1.0 · user</div></div>
+            <div style="display: flex; gap: 10px; align-items: center;"><div style="width: 28px; height: 28px; border-radius: 6px; background: var(--teal-soft); display: flex; align-items: center; justify-content: center; color: var(--teal); font-family: 'JetBrains Mono', monospace; font-weight: 600; font-size: 12px;">V</div><div style="font-size: 13px;"><strong>Video Toolkit</strong> · v0.9.2 · user</div></div>
+            <div style="border: 2px dashed var(--line); border-radius: 10px; padding: 16px; text-align: center; color: var(--muted); font-size: 12px; margin-top: 6px;">.vdxpkg 파일 드래그 또는 Open package…</div>
+          </div>
+        </div>
+        <!-- Agents tab mock -->
+        <div class="card outline" style="padding: 0; overflow: hidden;">
+          <div style="padding: 14px 18px; border-bottom: 1px solid var(--line); background: var(--sidebar);">
+            <div class="brand"><span class="brand-mark" style="width: 26px; height: 26px; font-size: 14px;">V</span><span style="font-size: 13px;">vdx-installer · Agents</span></div>
+          </div>
+          <div style="padding: 16px 18px; display: flex; flex-direction: column; gap: 10px;">
+            <div style="font-size: 11px; color: var(--muted); font-family: 'JetBrains Mono', monospace;">https://samsung.github.io/agent-catalog/catalog.json</div>
+            <div style="display: flex; gap: 10px; align-items: center; justify-content: space-between;">
+              <div style="display: flex; gap: 10px; align-items: center;"><div style="width: 28px; height: 28px; border-radius: 6px; background: var(--teal-soft); display: flex; align-items: center; justify-content: center; color: var(--teal); font-family: 'JetBrains Mono', monospace; font-weight: 600; font-size: 12px;">C</div><div style="font-size: 13px;"><strong>Code Assistant</strong><br><span style="font-size: 11px; color: var(--muted);">v1.0.0 · 코드 자동완성 에이전트</span></div></div>
+              <div style="font-size: 11px; padding: 4px 10px; border-radius: 6px; background: var(--teal); color: white;">Install</div>
+            </div>
+            <div style="display: flex; gap: 10px; align-items: center; justify-content: space-between;">
+              <div style="display: flex; gap: 10px; align-items: center;"><div style="width: 28px; height: 28px; border-radius: 6px; background: var(--teal-soft); display: flex; align-items: center; justify-content: center; color: var(--teal); font-family: 'JetBrains Mono', monospace; font-weight: 600; font-size: 12px;">R</div><div style="font-size: 13px;"><strong>Review Agent</strong><br><span style="font-size: 11px; color: var(--muted);">v1.0.0 · PR 자동 리뷰 에이전트</span></div></div>
+              <div style="font-size: 11px; padding: 4px 10px; border-radius: 6px; background: var(--teal); color: white;">Install</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="muted" style="margin-top: 14px;">설치된 항목은 <code>installed.json</code> 의 <code>kind: 'app' | 'agent'</code> 로 자동 분류 → 각 탭에서 분리 표시.</p>
+    </div>
+    <div class="deck-footer"><span>11 / 15 · Apps + Agents</span></div>
+  </section>
+
+  <!-- =================== SLIDE 12: AGENT CATALOG =================== -->
+  <section class="slide" data-title="agent-catalog 운영">
+    <div class="slide-content">
+      <div class="eyebrow">에이전트 카탈로그</div>
+      <h1>GitHub Pages = 사내 에이전트 스토어</h1>
+      <p>운영자는 catalog.json + 서명 + .vdxpkg 파일들을 <code>agent-catalog</code> 깃허브 페이지에 올리기만 하면 됨. 호스트는 그것을 fetch + 검증 + 표시.</p>
+      <svg class="flow" viewBox="0 0 1100 280" style="margin-top: 16px;">
+        <defs>
+          <marker id="ar6" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M0,0 L10,5 L0,10 z" fill="#0F9488"/>
+          </marker>
+        </defs>
+        <!-- vdx-pack -->
+        <g transform="translate(20,40)">
+          <rect width="200" height="100" rx="10" fill="#FFFFFF" stroke="rgba(15,148,136,0.30)"/>
+          <text x="14" y="22" font-family="JetBrains Mono" font-size="10" fill="#0F9488">에이전트 팀</text>
+          <text x="14" y="46" font-family="Inter Tight" font-size="13" fill="#15171C">vdx-pack build</text>
+          <text x="14" y="66" font-family="Inter Tight" font-size="13" fill="#15171C">vdx-pack sign --key</text>
+          <text x="14" y="86" font-family="Inter Tight" font-size="11" fill="#64748B">→ *.vdxpkg</text>
+        </g>
+        <line x1="220" y1="90" x2="240" y2="90" stroke="#0F9488" stroke-width="2" marker-end="url(#ar6)"/>
+        <!-- agent-catalog repo -->
+        <g transform="translate(240,20)">
+          <rect width="320" height="160" rx="10" fill="rgba(15,148,136,0.05)" stroke="rgba(15,148,136,0.30)"/>
+          <text x="14" y="24" font-family="JetBrains Mono" font-size="10" fill="#0F9488">samsung/agent-catalog · GitHub Pages</text>
+          <text x="14" y="50" font-family="JetBrains Mono" font-size="12" fill="#15171C">catalog.json</text>
+          <text x="14" y="70" font-family="JetBrains Mono" font-size="12" fill="#15171C">catalog.json.sig</text>
+          <text x="14" y="90" font-family="JetBrains Mono" font-size="12" fill="#15171C">code-assistant-1.0.0.vdxpkg</text>
+          <text x="14" y="110" font-family="JetBrains Mono" font-size="12" fill="#15171C">review-agent-1.0.0.vdxpkg</text>
+          <text x="14" y="130" font-family="JetBrains Mono" font-size="12" fill="#15171C">… etc</text>
+          <text x="14" y="150" font-family="Inter Tight" font-size="11" fill="#64748B" font-style="italic">정적 파일만 · GitHub Pages 라면 어디든 OK</text>
+        </g>
+        <line x1="560" y1="90" x2="580" y2="90" stroke="#0F9488" stroke-width="2" marker-end="url(#ar6)"/>
+        <!-- vdx-installer host -->
+        <g transform="translate(580,20)">
+          <rect width="500" height="240" rx="10" fill="#FFFFFF" stroke="rgba(15,148,136,0.30)"/>
+          <text x="14" y="24" font-family="JetBrains Mono" font-size="10" fill="#0F9488">사용자의 vdx-installer</text>
+          <text x="14" y="48" font-family="Inter Tight" font-size="13" fill="#15171C">1. catalog.json + .sig fetch · ETag로 304 short-circuit</text>
+          <text x="14" y="68" font-family="Inter Tight" font-size="13" fill="#15171C">2. 임베디드 pubkey로 catalog 서명 검증</text>
+          <text x="14" y="88" font-family="Inter Tight" font-size="13" fill="#15171C">3. 디스크 캐시에 atomic write — 다음 부팅 즉시 표시</text>
+          <text x="14" y="108" font-family="Inter Tight" font-size="13" fill="#15171C">4. 사용자 클릭 → packageUrl 스트리밍 다운로드 (KB/s + ETA)</text>
+          <text x="14" y="128" font-family="Inter Tight" font-size="13" fill="#15171C">5. parseVdxpkg → manifest 검증 + payload sha256 검증</text>
+          <text x="14" y="148" font-family="Inter Tight" font-size="13" fill="#15171C">6. 마법사 → 트랜잭션 install</text>
+          <text x="14" y="172" font-family="Inter Tight" font-size="13" fill="#15171C">7. installed.json [id].kind = 'agent'</text>
+          <text x="14" y="200" font-family="Inter Tight" font-size="11" fill="#64748B" font-style="italic">vdx.config.json 의 agentCatalog.url 만 있으면 됨</text>
+        </g>
+      </svg>
+    </div>
+    <div class="deck-footer"><span>12 / 15 · 에이전트 카탈로그</span></div>
+  </section>
+
+  <!-- =================== SLIDE 13: PERFORMANCE =================== -->
+  <section class="slide" data-title="퍼포먼스">
+    <div class="slide-content">
+      <div class="eyebrow">사용자 체감</div>
+      <h1>"가벼운 인스톨러" — 측정값</h1>
+      <p>"무겁다는 느낌이 들면 안 된다" 가 명시된 요구사항. 모든 항목 측정 가능.</p>
+      <div class="grid-4" style="margin-top: 16px;">
+        <div class="stat">
+          <div class="stat-num">239 kB</div>
+          <div class="stat-label">초기 paint chunk</div>
+          <div class="stat-sub">628 → 239 (−62%)<br>esbuild minify + drop console</div>
+        </div>
+        <div class="stat">
+          <div class="stat-num">0 ms</div>
+          <div class="stat-label">두 번째 부팅 catalog</div>
+          <div class="stat-sub">디스크 캐시 hydration<br>+ 백그라운드 304 refresh</div>
+        </div>
+        <div class="stat">
+          <div class="stat-num">≤ 30 Hz</div>
+          <div class="stat-label">IPC progress 이벤트</div>
+          <div class="stat-sub">10k/install → ≤100 max<br>throttle + 다운로드 KB/s 자동 계산</div>
+        </div>
+        <div class="stat">
+          <div class="stat-num">0</div>
+          <div class="stat-label">Win32 추가 npm deps</div>
+          <div class="stat-sub">reg.exe / WSH /<br>tasklist OS 번들만 사용</div>
+        </div>
+      </div>
+      <div class="grid-3" style="margin-top: 18px;">
+        <div class="card outline">
+          <div class="ttl">Cold start</div>
+          <div class="desc">window <code>show: false</code> + <code>ready-to-show</code>. 인라인 스켈레톤이 React 마운트 전에 즉시 paint → 흰 화면 깜빡임 0.</div>
+        </div>
+        <div class="card outline">
+          <div class="ttl">Streamed download</div>
+          <div class="desc">WHATWG ReadableStream chunk-by-chunk. 100 MB 패키지도 이벤트 루프 차단 없음. 실시간 KB/s + ETA.</div>
+        </div>
+        <div class="card outline">
+          <div class="ttl">Lazy chunks</div>
+          <div class="desc">Wizard 7.3 kB · Progress 3.1 kB · Agents 3.6 kB. 사용자가 그 화면에 들어가기 전엔 다운로드 안 함.</div>
+        </div>
+      </div>
+    </div>
+    <div class="deck-footer"><span>13 / 15 · 퍼포먼스</span></div>
+  </section>
+
+  <!-- =================== SLIDE 14: DEVELOPER WORKFLOW =================== -->
+  <section class="slide dark" data-title="개발자 워크플로">
+    <div class="slide-content">
+      <div class="eyebrow">앱 / 에이전트 팀 워크플로</div>
+      <h1>vdx-pack CLI + AI 어시스턴트가 패키징을 처리</h1>
+      <p>앱 팀은 manifest.json만 작성. 검증·해시·서명·zip 빌드는 CLI가, 그 CLI를 호출하는 루프는 Cursor / Cline 룰 파일이.</p>
+      <div class="grid-2 grow" style="gap: 28px; margin-top: 14px;">
+        <pre style="font-size: 12px;"><span class="c"># 검증 — schema + 의미 검사</span>
+$ vdx-pack validate manifest.json --payload ./payload
+✓ com.samsung.vdx.example v1.2.3 valid
+
+<span class="c"># 해시 — exec.allowedHashes 에 박을 값</span>
+$ vdx-pack hash ./payload/post.exe
+sha256:98ea6e4f216f2fb4b69fff9b3a44842c…
+
+<span class="c"># 빌드 + 서명 — 서명되지 않은 패키지는 dev 모드만</span>
+$ vdx-pack build \
+    --manifest manifest.json \
+    --payload ./payload \
+    --out my-agent-1.0.0.vdxpkg \
+    --key ~/.vdx/private-signing.bin
+✓ built my-agent-1.0.0.vdxpkg (412.3 KiB)
+  payload sha256: 2365ba39…
+  signed: YES
+
+<span class="c"># --json 으로 출력 → AI 어시스턴트가 파싱</span>
+$ vdx-pack validate manifest.json --json | jq</pre>
+        <div class="col">
+          <div class="card outline">
+            <div class="ttl">.cursor/rules/vdx-packaging.mdc</div>
+            <div class="desc">Cursor가 manifest 편집 후 자동으로 <code>vdx-pack validate --json</code> 돌리고 결과로 self-correct하는 루프 룰.</div>
+          </div>
+          <div class="card outline">
+            <div class="ttl">.clinerules/vdx-packaging.md</div>
+            <div class="desc">Cline 자율 모드용 동일 내용. AI는 manifest 의도만 받으면 검증 통과까지 알아서.</div>
+          </div>
+          <div class="card outline">
+            <div class="ttl">샘플 fixtures</div>
+            <div class="desc"><code>npm run gen:agent-catalog</code> 한 줄로 catalog.json + 2개 에이전트 .vdxpkg + sha256 sidecar + README 생성. GitHub Pages 브랜치에 그대로 복사.</div>
+          </div>
+          <div class="card outline">
+            <div class="ttl">vdx-app-template (예정)</div>
+            <div class="desc">"Use this template" 한 번으로 manifest 스카폴드 + GitHub Actions 릴리즈 + AI 룰 일괄 셋업.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="deck-footer"><span>14 / 15 · 개발자 워크플로</span></div>
+  </section>
+
+  <!-- =================== SLIDE 15: ROADMAP =================== -->
+  <section class="slide" data-title="현재 + 다음">
+    <div class="slide-content">
+      <div class="eyebrow">현재 + 다음</div>
+      <h1>지금까지 / 앞으로</h1>
+      <p>총 11개 commit, 369개 테스트 통과, 0 lint error · 0 typecheck error · production build 239 kB initial chunk.</p>
+      <div class="timeline" style="margin-top: 14px;">
+        <div class="tnode"><span class="h">P 1.0</span><span class="t">엔진 코어</span><span class="d">manifest · template · wizard · install · uninstall · journal</span></div>
+        <div class="tnode"><span class="h">P 1.1</span><span class="t">Electron 셸</span><span class="d">main + preload + React UI · 사이드로드 end-to-end</span></div>
+        <div class="tnode"><span class="h">R1</span><span class="t">하드닝 1차</span><span class="d">lock · EXDEV · .bak 폴백 · stepOrdinal · sibling-attack</span></div>
+        <div class="tnode"><span class="h">+</span><span class="t">Agents 탭</span><span class="d">agent-catalog · 두 카탈로그 분리 · kind 태그</span></div>
+        <div class="tnode"><span class="h">Lightning</span><span class="t">경량화</span><span class="d">62% 번들 ↓ · 디스크 캐시 · streaming · 30Hz throttle</span></div>
+        <div class="tnode"><span class="h">P 1.2</span><span class="t">Win32 platform</span><span class="d">reg.exe · WSH · WM_SETTINGCHANGE · 0 npm deps</span></div>
+        <div class="tnode"><span class="h">R2/R3</span><span class="t">하드닝 2차</span><span class="d">CSP · 경로 allowlist · strict schema · NoControlChars</span></div>
+        <div class="tnode"><span class="h">Refactor</span><span class="t">IPC 모듈화</span><span class="d">settings · update · diag · auth handler 분리 + 단위 테스트</span></div>
+      </div>
+      <div class="grid-3" style="margin-top: 22px;">
+        <div class="phase">
+          <span class="name">Phase 1.3 · 다음</span>
+          <h3>elevated worker + 코드사인</h3>
+          <ul>
+            <li>HKLM / Program Files 머신 스코프</li>
+            <li>UAC 프롬프트 + signed stdio</li>
+            <li>Authenticode EV 코드사인 파이프라인</li>
+            <li>NSIS 설치/업데이트 Build CI</li>
+          </ul>
+        </div>
+        <div class="phase">
+          <span class="name">Phase 2 · 운영</span>
+          <h3>자동 업데이트 + 트레이</h3>
+          <ul>
+            <li>electron-updater self-update</li>
+            <li>system tray + 백그라운드 폴링</li>
+            <li>i18n 한국어/영어 풀</li>
+            <li>진단 export (logs + state, redacted)</li>
+          </ul>
+        </div>
+        <div class="phase">
+          <span class="name">별도 레포</span>
+          <h3>생태계</h3>
+          <ul>
+            <li>vdx-pack (npm 분리)</li>
+            <li>vdx-app-template (앱 팀 onboarding)</li>
+            <li>vdx-pack-action (GitHub Action)</li>
+            <li>vdx-catalog · agent-catalog (운영)</li>
+            <li>vdx-docs (문서 사이트)</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+    <div class="deck-footer"><span>15 / 15 · 로드맵</span></div>
+  </section>
+
+  <!-- progress + nav -->
+  <span class="kbd-hint">← / → · Space</span>
+  <div class="deck-nav">
+    <button id="prev" aria-label="이전 슬라이드">‹</button>
+    <button id="next" aria-label="다음 슬라이드">›</button>
+  </div>
+</div>
+
+<script>
+(function () {
+  const slides = Array.from(document.querySelectorAll('.slide'));
+  const bar = document.getElementById('progressBar');
+  let i = 0;
+  // Honor URL hash (#5) so refreshing keeps you on the same slide.
+  const fromHash = parseInt((location.hash || '').replace('#', ''), 10);
+  if (Number.isFinite(fromHash) && fromHash >= 1 && fromHash <= slides.length) {
+    i = fromHash - 1;
+  }
+  function show(n) {
+    i = Math.max(0, Math.min(slides.length - 1, n));
+    slides.forEach((s, k) => s.classList.toggle('is-active', k === i));
+    bar.style.width = ((i + 1) / slides.length * 100) + '%';
+    location.hash = String(i + 1);
+  }
+  function next() { show(i + 1); }
+  function prev() { show(i - 1); }
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') { next(); e.preventDefault(); }
+    else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { prev(); e.preventDefault(); }
+    else if (e.key === 'Home') { show(0); }
+    else if (e.key === 'End') { show(slides.length - 1); }
+  });
+  document.getElementById('next').addEventListener('click', next);
+  document.getElementById('prev').addEventListener('click', prev);
+  show(i);
+})();
+</script>
+</body>
+</html>

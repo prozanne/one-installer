@@ -22,7 +22,10 @@
     "vdx-pack": "tsx src/vdx-pack/cli.ts",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "start": "electron-vite preview"
+    "start": "electron-vite preview",
+    "dist": "electron-vite build && electron-builder --config electron-builder.yml",
+    "dist:win": "electron-vite build && electron-builder --config electron-builder.yml --win",
+    "dist:mac": "electron-vite build && electron-builder --config electron-builder.yml --mac"
   },
   "devDependencies": {
     "@types/minimatch": "^5.1.2",

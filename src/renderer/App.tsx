@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { Outlet, NavLink } from 'react-router-dom';
 import { useStore } from './store';
+import { Toast } from './components/Toast';
 
 export function App() {
   const refreshApps = useStore((s) => s.refreshApps);
@@ -14,6 +15,7 @@ export function App() {
 
   return (
     <div className="flex h-full">
+      <Toast />
       <aside className="w-56 shrink-0 bg-sidebar border-r border-black/5 p-5 flex flex-col">
         <div className="flex items-center gap-2 mb-6">
           <div className="w-8 h-8 rounded-lg bg-teal/10 border border-teal/30 flex items-center justify-center">
@@ -38,6 +40,14 @@ export function App() {
             }
           >
             Agents
+          </NavLink>
+          <NavLink
+            to="/settings"
+            className={({ isActive }) =>
+              `px-3 py-2 rounded-md ${isActive ? 'bg-white shadow-sm' : 'hover:bg-white/60'}`
+            }
+          >
+            Settings
           </NavLink>
         </nav>
         <div className="mt-auto text-xs text-black/40">

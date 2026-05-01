@@ -17,6 +17,9 @@ const ProgressPage = lazy(() =>
 const AgentsPage = lazy(() =>
   import('./pages/AgentsPage').then((m) => ({ default: m.AgentsPage })),
 );
+const SettingsPage = lazy(() =>
+  import('./pages/SettingsPage').then((m) => ({ default: m.SettingsPage })),
+);
 
 const root = createRoot(document.getElementById('root')!);
 root.render(
@@ -46,6 +49,14 @@ root.render(
             element={
               <Suspense fallback={null}>
                 <AgentsPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="settings"
+            element={
+              <Suspense fallback={null}>
+                <SettingsPage />
               </Suspense>
             }
           />

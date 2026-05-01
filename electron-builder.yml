@@ -1,0 +1,96 @@
+# electron-builder configuration.
+# Run: `npm run dist`. Outputs go to `out-installer/`.
+#
+# Code signing — both the Win signtool path and the macOS notarization path
+# are wired through environment variables so secrets never sit in this file.
+# See README for the full env-var list. Builds without signing succeed but
+# produce SmartScreen-warning binaries — fine for internal CI, never ship.
+
+appId: com.samsung.vdx.installer
+productName: VDX Installer
+copyright: Copyright © 2026 Samsung Electronics
+artifactName: ${productName}-${version}-${arch}.${ext}
+
+# `out/` is electron-vite's build dir — feed those bundled assets in.
+directories:
+  output: out-installer
+  buildResources: build
+
+# `npm prune --production` style: strip every devDependency before packaging.
+# Keeps the asar lean. Non-default false because the moved-out renderer/test
+# deps would already be excluded; this is belt-and-suspenders.
+files:
+  - 'out/**/*'
+  - 'package.json'
+  - '!**/node_modules/*/{CHANGELOG.md,README.md,readme.md,readme.markdown}'
+  - '!**/node_modules/*/{test,__tests__,tests,powered-test,example,examples}'
+  - '!**/node_modules/*.d.ts'
+  - '!**/node_modules/.bin'
+
+# asar packs the JS into a single file. compression: maximum trades CPU at
+# build time for ~25-30% smaller installer. Worth it for "first download
+# delays initial gut-feel" on user installs.
+asar: true
+asarUnpack: []
+compression: maximum
+
+# Single-instance lock is enforced in main(); no `protocols:` block today.
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+  artifactName: ${productName}-Setup-${version}.${ext}
+  # Authenticode signing. CI sets these from secrets:
+  #   CSC_LINK            — base64-encoded .pfx
+  #   CSC_KEY_PASSWORD    — pfx passphrase
+  # Or for EV certs via cloud signing:
+  #   AZURE_TENANT_ID     — Azure Code Signing tenant
+  #   AZURE_CLIENT_ID     — service principal id
+  #   AZURE_CLIENT_SECRET — service principal secret
+  #   AZURE_CODE_SIGNING_NAME — endpoint name
+  signingHashAlgorithms: [sha256]
+  publisherName: Samsung Electronics
+  # Locked-down corp machines may block the installer if the publisher field
+  # in metadata mismatches the cert. Keep these in sync with whatever DigiCert /
+  # Sectigo / Azure Code Signing emits as CN.
+  # `requestedExecutionLevel: asInvoker` — installer respects standard-user
+  # scope by default. The elevated-worker path inside the app handles HKLM.
+  requestedExecutionLevel: asInvoker
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  uninstallDisplayName: VDX Installer
+  # Sidecar shortcuts. Apps installed *through* VDX manage their own; this is
+  # purely the installer-itself shortcut.
+  createDesktopShortcut: false
+  createStartMenuShortcut: true
+  shortcutName: VDX Installer
+  # Skip the differential-update header chunk. We ship full installers per
+  # release; auto-updater handles delta via `app.relaunch({ execPath: stagedPath })`
+  # in the host code.
+  differentialPackage: false
+
+mac:
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+  category: public.app-category.developer-tools
+  # Notarization. CI sets:
+  #   APPLE_ID                       — apple developer email
+  #   APPLE_APP_SPECIFIC_PASSWORD    — app-specific password
+  #   APPLE_TEAM_ID                  — 10-char team id
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # `extendInfo` keeps Info.plist clean — only the fields we need.
+  extendInfo:
+    NSAppleEventsUsageDescription: VDX Installer does not use AppleEvents.
+
+# `publish` is intentionally omitted. CI uploads artifacts to the catalog
+# repo via a separate workflow (so we don't ship a token here).

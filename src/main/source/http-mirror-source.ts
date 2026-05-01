@@ -7,6 +7,8 @@
  */
 import * as https from 'node:https';
 import * as http from 'node:http';
+import * as net from 'node:net';
+import * as tls from 'node:tls';
 import type { Readable } from 'node:stream';
 import type {
   PackageSource,
@@ -91,17 +93,75 @@ export interface HttpMirrorConfig {
   token?: string;
 
   /**
-   * Optional proxy override for this source only.
-   *
-   * NOT YET IMPLEMENTED. The field is accepted for forward-compat with R3
-   * config files, but the underlying node:http/node:https requests do not
-   * route through it. A `proxyUrl` value is detected at construction time
-   * and surfaced via `console.warn` so operators see the misconfiguration
-   * immediately rather than silently bypassing their proxy. Threading this
-   * through requires either an `https-proxy-agent` dep or hand-rolled
-   * CONNECT support; tracked for R3.
+   * Optional proxy override for this source. Routes all requests through the
+   * given HTTP proxy via `CONNECT` (HTTPS targets) or absolute-form GET
+   * (HTTP targets). Format: `http://host:port` or `http://user:pass@host:port`.
+   * Per-source override; the host's global proxy config does not apply here.
    */
   proxyUrl?: string;
+}
+
+// --------------------------------------------------------------------------
+// Proxy helpers (hand-rolled to avoid an external dependency)
+// --------------------------------------------------------------------------
+
+interface ProxyTarget {
+  hostname: string;
+  port: number;
+  auth?: string;
+}
+
+function parseProxy(raw: string): ProxyTarget {
+  const u = new URL(raw);
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    throw new Error(`Unsupported proxy protocol: ${u.protocol}`);
+  }
+  const port = u.port ? Number(u.port) : u.protocol === 'https:' ? 443 : 80;
+  const auth = u.username
+    ? `${decodeURIComponent(u.username)}:${decodeURIComponent(u.password)}`
+    : undefined;
+  return { hostname: u.hostname, port, ...(auth !== undefined ? { auth } : {}) };
+}
+
+/**
+ * Open a TCP socket to the proxy and issue CONNECT for an HTTPS target,
+ * then upgrade to TLS. Returns a TLS socket the caller can hand to
+ * `https.request({ socket })` so the rest of the path works unchanged.
+ */
+function tunnelHttps(target: URL, proxy: ProxyTarget): Promise<tls.TLSSocket> {
+  return new Promise((resolve, reject) => {
+    const headers = [
+      `CONNECT ${target.hostname}:${target.port || 443} HTTP/1.1`,
+      `Host: ${target.hostname}:${target.port || 443}`,
+    ];
+    if (proxy.auth) {
+      headers.push(`Proxy-Authorization: Basic ${Buffer.from(proxy.auth).toString('base64')}`);
+    }
+    headers.push('', '');
+    const sock = net.connect(proxy.port, proxy.hostname);
+    sock.once('error', reject);
+    sock.once('connect', () => {
+      sock.write(headers.join('\r\n'));
+    });
+    let buf = '';
+    const onData = (chunk: Buffer): void => {
+      buf += chunk.toString('binary');
+      const headerEnd = buf.indexOf('\r\n\r\n');
+      if (headerEnd === -1) return;
+      sock.removeListener('data', onData);
+      const statusLine = buf.split('\r\n', 1)[0] ?? '';
+      const m = statusLine.match(/^HTTP\/1\.[01] (\d+)/);
+      if (!m || Number(m[1]) !== 200) {
+        sock.destroy();
+        reject(new Error(`Proxy CONNECT failed: ${statusLine}`));
+        return;
+      }
+      const tlsSock = tls.connect({ socket: sock, servername: target.hostname });
+      tlsSock.once('secureConnect', () => resolve(tlsSock));
+      tlsSock.once('error', reject);
+    };
+    sock.on('data', onData);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -114,6 +174,7 @@ interface RequestOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
   rangeBytes?: ByteRange;
+  proxy?: ProxyTarget;
 }
 
 interface RawResponse {
@@ -137,76 +198,143 @@ function requestRaw(opts: RequestOptions & { cap: number }): Promise<RawResponse
       headers['Range'] = `bytes=${opts.rangeBytes.start}-${opts.rangeBytes.end - 1}`;
     }
 
-    const req = lib.request(
-      {
-        hostname: url.hostname,
-        port: url.port || (isHttps ? 443 : 80),
-        path: url.pathname + url.search,
-        method: opts.method ?? 'GET',
-        headers,
-      },
-      (res) => {
-        const chunks: Buffer[] = [];
-        let total = 0;
-
-        res.on('data', (chunk: Buffer) => {
-          total += chunk.byteLength;
-          if (total > opts.cap) {
-            req.destroy();
-            reject(
-              Object.assign(new Error('Response exceeds size cap'), {
-                sourceError: {
-                  kind: 'InvalidResponseError' as const,
-                  message: 'Response body exceeds allowed size',
-                  statusCode: res.statusCode,
-                  retryable: false,
-                },
-              }),
-            );
-            return;
-          }
-          chunks.push(chunk);
-        });
-
-        res.on('end', () => {
-          resolve({
-            statusCode: res.statusCode ?? 0,
-            headers: res.headers,
-            body: Buffer.concat(chunks),
-          });
-        });
-
-        res.on('error', reject);
-      },
-    );
-
-    req.on('error', (e) => {
-      reject(
-        Object.assign(new Error((e as Error).message), {
-          sourceError: {
-            kind: 'NetworkError' as const,
-            message: `Network error: ${(e as Error).message}`,
-            cause: e,
-            retryable: true,
-          },
-        }),
-      );
-    });
-
-    if (opts.signal) {
-      const onAbort = () => {
-        req.destroy();
-        reject(opts.signal!.reason ?? new Error('Aborted'));
-      };
-      if (opts.signal.aborted) {
-        onAbort();
-        return;
+    // Proxy routing strategy:
+    // - HTTP target via proxy: absolute-form GET to the proxy with Host header.
+    // - HTTPS target via proxy: open a CONNECT tunnel, then https.request over
+    //   the tunneled TLS socket so cert verification + SNI still apply to the
+    //   real origin (not to the proxy). This must NOT use `agent: false` —
+    //   we replace the underlying socket explicitly.
+    const startRequest = (): http.ClientRequest => {
+      if (opts.proxy && isHttps) {
+        // Tunnel set up below in async branch.
+        throw new Error('https-via-proxy must use the async path');
       }
-      opts.signal.addEventListener('abort', onAbort, { once: true });
-      req.on('close', () => opts.signal!.removeEventListener('abort', onAbort));
+      if (opts.proxy && !isHttps) {
+        const proxyHeaders: Record<string, string> = { ...headers, host: url.host };
+        if (opts.proxy.auth) {
+          proxyHeaders['Proxy-Authorization'] = `Basic ${Buffer.from(opts.proxy.auth).toString('base64')}`;
+        }
+        return http.request(
+          {
+            hostname: opts.proxy.hostname,
+            port: opts.proxy.port,
+            path: url.toString(),
+            method: opts.method ?? 'GET',
+            headers: proxyHeaders,
+          },
+          handleResponse,
+        );
+      }
+      return lib.request(
+        {
+          hostname: url.hostname,
+          port: url.port || (isHttps ? 443 : 80),
+          path: url.pathname + url.search,
+          method: opts.method ?? 'GET',
+          headers,
+        },
+        handleResponse,
+      );
+    };
+
+    function handleResponse(res: http.IncomingMessage): void {
+      const chunks: Buffer[] = [];
+      let total = 0;
+
+      res.on('data', (chunk: Buffer) => {
+        total += chunk.byteLength;
+        if (total > opts.cap) {
+          req?.destroy();
+          reject(
+            Object.assign(new Error('Response exceeds size cap'), {
+              sourceError: {
+                kind: 'InvalidResponseError' as const,
+                message: 'Response body exceeds allowed size',
+                statusCode: res.statusCode,
+                retryable: false,
+              },
+            }),
+          );
+          return;
+        }
+        chunks.push(chunk);
+      });
+
+      res.on('end', () => {
+        resolve({
+          statusCode: res.statusCode ?? 0,
+          headers: res.headers,
+          body: Buffer.concat(chunks),
+        });
+      });
+
+      res.on('error', reject);
     }
 
-    req.end();
+    let req: http.ClientRequest;
+    const wireRequest = (r: http.ClientRequest): void => {
+      r.on('error', (e) => {
+        reject(
+          Object.assign(new Error((e as Error).message), {
+            sourceError: {
+              kind: 'NetworkError' as const,
+              message: `Network error: ${(e as Error).message}`,
+              cause: e,
+              retryable: true,
+            },
+          }),
+        );
+      });
+
+      if (opts.signal) {
+        const onAbort = (): void => {
+          r.destroy();
+          reject(opts.signal!.reason ?? new Error('Aborted'));
+        };
+        if (opts.signal.aborted) {
+          onAbort();
+          return;
+        }
+        opts.signal.addEventListener('abort', onAbort, { once: true });
+        r.on('close', () => opts.signal!.removeEventListener('abort', onAbort));
+      }
+    };
+
+    if (opts.proxy && isHttps) {
+      // HTTPS over CONNECT tunnel — preserve TLS verification against the real
+      // origin. We provide our own socket and never set agent:false; that
+      // disables keep-alive but is fine for one-shot fetches.
+      tunnelHttps(url, opts.proxy)
+        .then((tlsSock) => {
+          req = https.request(
+            {
+              method: opts.method ?? 'GET',
+              path: url.pathname + url.search,
+              headers: { ...headers, host: url.host },
+              createConnection: () => tlsSock,
+            },
+            handleResponse,
+          );
+          wireRequest(req);
+          req.end();
+        })
+        .catch((e) => {
+          reject(
+            Object.assign(new Error((e as Error).message), {
+              sourceError: {
+                kind: 'NetworkError' as const,
+                message: `Proxy tunnel failed: ${(e as Error).message}`,
+                cause: e,
+                retryable: true,
+              },
+            }),
+          );
+        });
+    } else {
+      req = startRequest();
+      wireRequest(req);
+      req.end();
+    }
   });
 }
 
@@ -270,21 +398,14 @@ export class HttpMirrorSource implements PackageSource {
   private readonly baseUrl: string;
   private readonly token: string | undefined;
   private readonly tokenPresent: boolean;
+  private readonly proxy: ProxyTarget | undefined;
 
   constructor(config: HttpMirrorConfig) {
     this.baseUrl = config.baseUrl.replace(/\/$/, '');
     this.token = config.token;
     this.tokenPresent = config.token !== undefined && config.token.length > 0;
     this.displayName = `HTTP mirror (${this.baseUrl})`;
-    if (config.proxyUrl) {
-      // The field is accepted but does not influence request routing yet.
-      // An operator who set this expects their corporate proxy to be used;
-      // surfacing the gap loudly is cheaper than letting requests sneak past.
-      console.warn(
-        '[HttpMirrorSource] config.proxyUrl is set but proxy support is not yet implemented; ' +
-          'requests will route directly. Tracked for R3.',
-      );
-    }
+    this.proxy = config.proxyUrl ? parseProxy(config.proxyUrl) : undefined;
   }
 
   private get authHeaders(): Record<string, string> {
@@ -292,6 +413,15 @@ export class HttpMirrorSource implements PackageSource {
       return { Authorization: `Bearer ${this.token}` };
     }
     return {};
+  }
+
+  /**
+   * Wrapper around the free `requestRaw` that injects this source's proxy
+   * config. All in-class call sites use this method so the proxy plumbing
+   * is invisible at the use site.
+   */
+  private _requestRaw(opts: RequestOptions & { cap: number }): Promise<RawResponse> {
+    return requestRaw(this.proxy ? { ...opts, proxy: this.proxy } : opts);
   }
 
   // -------------------------------------------------------------------------
@@ -312,7 +442,7 @@ export class HttpMirrorSource implements PackageSource {
 
     let res: RawResponse;
     try {
-      res = await requestRaw({
+      res = await this._requestRaw({
         url: catalogUrl,
         headers,
         signal: opts?.signal,
@@ -356,7 +486,7 @@ export class HttpMirrorSource implements PackageSource {
     // Fetch sig
     let sigRes: RawResponse;
     try {
-      sigRes = await requestRaw({
+      sigRes = await this._requestRaw({
         url: sigUrl,
         headers: this.authHeaders,
         signal: opts?.signal,
@@ -409,7 +539,7 @@ export class HttpMirrorSource implements PackageSource {
 
     let res: RawResponse;
     try {
-      res = await requestRaw({
+      res = await this._requestRaw({
         url: manifestUrl,
         headers: this.authHeaders,
         signal: opts?.signal,
@@ -436,7 +566,7 @@ export class HttpMirrorSource implements PackageSource {
 
     let sigRes: RawResponse;
     try {
-      sigRes = await requestRaw({
+      sigRes = await this._requestRaw({
         url: sigUrl,
         headers: this.authHeaders,
         signal: opts?.signal,
@@ -710,7 +840,7 @@ export class HttpMirrorSource implements PackageSource {
 
     let res: RawResponse;
     try {
-      res = await requestRaw({
+      res = await this._requestRaw({
         url: assetUrl,
         headers: this.authHeaders,
         signal: opts?.signal,
@@ -754,7 +884,7 @@ export class HttpMirrorSource implements PackageSource {
 
     let res: RawResponse;
     try {
-      res = await requestRaw({
+      res = await this._requestRaw({
         url: versionsUrl,
         headers: this.authHeaders,
         signal: opts?.signal,

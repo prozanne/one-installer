@@ -329,7 +329,14 @@ export function redactConfigForLogs(c: VdxConfig): Record<string, unknown> {
   return {
     schemaVersion: c.schemaVersion,
     source,
-    trustRoots: c.trustRoots?.map((k) => `${k.slice(0, 8)}...`),
+    // Show only an 8-char fingerprint of each trust root + its keyId (when
+    // present). Full pubkey isn't a secret but is also useless in logs;
+    // fingerprint + id is enough for "which root signed which catalog".
+    trustRoots: c.trustRoots?.map((k) => {
+      const key = typeof k === 'string' ? k : k.key;
+      const id = typeof k === 'string' ? undefined : k.keyId;
+      return id ? `${id}=${key.slice(0, 8)}...` : `${key.slice(0, 8)}...`;
+    }),
     channel: c.channel,
     proxy: proxyRedacted,
     telemetry: c.telemetry,

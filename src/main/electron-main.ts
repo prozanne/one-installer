@@ -25,10 +25,14 @@ import {
   fetchManifestVerified,
   fetchPayloadStream,
 } from './catalog';
+import { checkCatalogFreshness, getFreshnessAnchor } from './catalog/freshness';
+import { resolveTrustRoots } from './config/trust-roots';
 import { handleSettingsGet, handleSettingsSet } from './ipc/handlers/settings';
 import { handleUpdateCheck, handleUpdateRun } from './ipc/handlers/update';
 import { handleDiagExport, handleDiagOpenLogs } from './ipc/handlers/diag';
 import { handleAuthSetToken, handleAuthClearToken } from './ipc/handlers/auth';
+import { createPickerAllowlist } from './ipc/picker-allowlist';
+import { computeCsp } from './ipc/csp';
 import { ipcError, ipcErrorMessage } from './ipc/error';
 import {
   IpcChannels,
@@ -54,13 +58,6 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url));
 /** Maximum number of concurrent sideload sessions before we evict the oldest. */
 const MAX_SIDELOAD_SESSIONS = 8;
 
-/**
- * Maximum number of file paths the picker can publish before the oldest is
- * evicted. Caps the worst-case "spam pickVdxpkg" memory growth — the renderer
- * cannot accumulate an unbounded allowlist of paths it might one day claim.
- */
-const MAX_PICKED_PATHS = 16;
-
 interface SideloadSession {
   manifest: Manifest;
   payloadBytes: Buffer;
@@ -71,12 +68,11 @@ interface SideloadSession {
 const sideloadSessions = new Map<string, SideloadSession>();
 
 /**
- * Paths that `sideload:pick` has handed back to the renderer. `sideload:open`
- * only honors paths in this set — without this gate the renderer would have
- * an IPC-exposed `fs.readFile` for any user-readable file the OS will allow.
- * Each entry is single-use: claimed by `sideload:open` and removed.
+ * Picker allowlist — gates `sideload:open` to paths the user just chose via
+ * the OS file dialog. Implementation lives in `./ipc/picker-allowlist.ts`
+ * with its own test coverage; the cap defaults to 16 there.
  */
-const pickedPaths = new Set<string>();
+const pickerAllowlist = createPickerAllowlist();
 
 /**
  * Refcount of in-flight install / uninstall / catalogInstall operations.
@@ -94,14 +90,6 @@ function beginTransaction(): void {
 }
 function endTransaction(): void {
   if (activeTransactions > 0) activeTransactions--;
-}
-
-function rememberPickedPath(p: string): void {
-  if (pickedPaths.size >= MAX_PICKED_PATHS) {
-    const oldest = pickedPaths.values().next().value;
-    if (oldest !== undefined) pickedPaths.delete(oldest);
-  }
-  pickedPaths.add(p);
 }
 
 /** Evict the oldest session if the map is at capacity. */
@@ -164,15 +152,9 @@ function createWindow(): void {
   // Strict CSP. Setting it via webRequest is the only way to enforce it for
   // both the prod file:// load and the dev http://localhost Vite load — a
   // <meta> tag in index.html is too late for some sources (e.g. preconnects)
-  // and Vite does not inject one in dev. `connect-src 'none'` blocks any
-  // accidental fetch() from the renderer; all network is supposed to go
-  // through main via IPC. `style-src 'unsafe-inline'` is required by React's
-  // injected style tags; everything else is locked down.
-  // Dev relaxations: Vite/HMR loads modules over ws: and inline-eval; only
-  // applied when ELECTRON_RENDERER_URL is set so prod builds stay strict.
-  const csp = process.env['ELECTRON_RENDERER_URL']
-    ? "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' http://localhost:* ws://localhost:*; style-src 'self' 'unsafe-inline'; img-src 'self' data: http://localhost:*; connect-src 'self' ws://localhost:* http://localhost:*; font-src 'self' data:"
-    : "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'none'; font-src 'self' data:";
+  // and Vite does not inject one in dev. The actual policy strings live in
+  // `./ipc/csp.ts` with their own test coverage.
+  const csp = computeCsp(Boolean(process.env['ELECTRON_RENDERER_URL']));
   mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
     callback({
       responseHeaders: {
@@ -391,13 +373,13 @@ async function main(): Promise<void> {
     );
   }
   const getTrustRoots = async (): Promise<Uint8Array[]> => {
-    const roots: Uint8Array[] = [];
-    if (config.trustRoots) {
-      for (const b64 of config.trustRoots) {
-        roots.push(Buffer.from(b64, 'base64'));
-      }
-    }
-    if (includeDevKey) roots.push(await getDevPubKey());
+    // resolveTrustRoots handles the bare-string + object-form union and drops
+    // any object-form root whose validity window is closed. Without `asOf`
+    // it uses Date.now() — fine for runtime checks; the catalog/manifest
+    // verifier passes the catalog's own updatedAt for "as-of" semantics.
+    const roots = resolveTrustRoots(config, {
+      devPubKey: includeDevKey ? await getDevPubKey() : null,
+    });
     if (roots.length === 0) {
       // Never silently accept anything. If the operator forgot to ship trust
       // roots in a packaged build, surface a fatal error here so the failure
@@ -428,7 +410,7 @@ async function main(): Promise<void> {
     // Remember every path the user actually selected so `sideload:open` can
     // verify the renderer is asking for a file the picker just handed it.
     if (!result.canceled) {
-      for (const p of result.filePaths) rememberPickedPath(p);
+      for (const p of result.filePaths) pickerAllowlist.remember(p);
     }
     return result;
   });
@@ -439,8 +421,9 @@ async function main(): Promise<void> {
     // Picker allowlist: only paths returned by `sideload:pick` may be opened.
     // Without this gate the renderer can name any user-readable file and we
     // would `readFileSync` it — effectively turning IPC into `fs.readFile`.
-    // Single-use semantics: claim+remove so a stale path can't be replayed.
-    if (!pickedPaths.delete(parsed.data.vdxpkgPath)) {
+    // Single-use semantics: claim consumes the entry so a stale path can't
+    // be replayed.
+    if (!pickerAllowlist.claim(parsed.data.vdxpkgPath)) {
       return { ok: false, error: 'unauthorized path — open the file via the picker dialog' };
     }
     evictOldestSideloadSession();
@@ -589,6 +572,17 @@ async function main(): Promise<void> {
         };
       }
 
+      // Replay defense: if the incoming catalog's updatedAt is older than the
+      // highest anchor we've ever seen for this kind, refuse. A signed-but-
+      // stale body can otherwise be re-served indefinitely.
+      const stateForFreshness = await installedStore.read();
+      const fresh = checkCatalogFreshness(
+        result.value.catalog.updatedAt,
+        getFreshnessAnchor(stateForFreshness, 'agent'),
+      );
+      if (!fresh.ok) {
+        return { ok: false, error: fresh.reason ?? 'replay refused', sourceUrl: config.agentCatalog.url };
+      }
       const entry: CatalogCacheEntry = {
         catalog: result.value.catalog,
         etag: result.value.etag ?? undefined,
@@ -598,6 +592,15 @@ async function main(): Promise<void> {
       };
       catalogCacheEntries.set('agent', entry);
       catalogCache?.write('agent', entry);
+      // Advance the anchor only when the body was signature-validated. An
+      // unverified catalog must not poison the anchor — otherwise a single
+      // unsigned MITM response would lock subsequent verified responses out.
+      if (result.value.signatureValid) {
+        await installedStore.update((s) => {
+          if (!s.catalogFreshness) s.catalogFreshness = {};
+          s.catalogFreshness.agent = result.value.catalog.updatedAt;
+        });
+      }
       return {
         ok: true,
         catalog: result.value.catalog,
@@ -633,6 +636,16 @@ async function main(): Promise<void> {
         };
       }
 
+      // Replay defense — same logic as the agent path. fetchCatalogVerified
+      // throws on bad sig so we know `result.catalog` here is signature-valid.
+      const stateForFreshness = await installedStore.read();
+      const fresh = checkCatalogFreshness(
+        result.catalog.updatedAt,
+        getFreshnessAnchor(stateForFreshness, 'app'),
+      );
+      if (!fresh.ok) {
+        return { ok: false, error: fresh.reason ?? 'replay refused', sourceUrl: packageSource.displayName };
+      }
       const fetchedAt = new Date().toISOString();
       const entry: CatalogCacheEntry = {
         catalog: result.catalog,
@@ -643,6 +656,10 @@ async function main(): Promise<void> {
       };
       catalogCacheEntries.set('app', entry);
       catalogCache?.write('app', entry);
+      await installedStore.update((s) => {
+        if (!s.catalogFreshness) s.catalogFreshness = {};
+        s.catalogFreshness.app = result.catalog.updatedAt;
+      });
 
       return {
         ok: true,
