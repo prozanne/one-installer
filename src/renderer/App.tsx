@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { Outlet, NavLink } from 'react-router-dom';
 import { useStore } from './store';
 import { Toast } from './components/Toast';
+import { UpdateBadge } from './components/UpdateBadge';
 
 export function App() {
   const refreshApps = useStore((s) => s.refreshApps);
@@ -50,6 +51,7 @@ export function App() {
             Settings
           </NavLink>
         </nav>
+        <UpdateBadge />
         <div className="mt-auto text-xs text-black/40">
           <div className="font-mono">v0.1.0-dev</div>
           <div>dev mode</div>

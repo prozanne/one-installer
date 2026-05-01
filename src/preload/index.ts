@@ -18,6 +18,8 @@ import type {
   SettingsSetResT,
   DiagExportResT,
   DiagOpenLogsResT,
+  UpdateApplyResT,
+  UpdateAvailableEventT,
   UpdateCheckResT,
   UpdateRunResT,
   AuthSetTokenReqT,
@@ -66,6 +68,20 @@ const ipcApi = {
   },
   async updateRun(): Promise<UpdateRunResT> {
     return ipcRenderer.invoke(IpcChannels.updateRun, { confirm: true });
+  },
+  async updateApply(): Promise<UpdateApplyResT> {
+    return ipcRenderer.invoke(IpcChannels.updateApply, { confirm: true });
+  },
+  /**
+   * Subscribe to background `update:available` broadcasts. Main fires this
+   * exactly once per *new* version it discovers — repeat polls of the same
+   * version do not re-broadcast. Returns an unsubscribe function so the
+   * renderer can detach on unmount.
+   */
+  onUpdateAvailable(cb: (info: UpdateAvailableEventT) => void): () => void {
+    const listener = (_e: IpcRendererEvent, payload: UpdateAvailableEventT) => cb(payload);
+    ipcRenderer.on(IpcChannels.updateAvailable, listener);
+    return () => ipcRenderer.removeListener(IpcChannels.updateAvailable, listener);
   },
   async authSetToken(req: AuthSetTokenReqT): Promise<AuthSetTokenResT> {
     return ipcRenderer.invoke(IpcChannels.authSetToken, req);

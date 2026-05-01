@@ -39,14 +39,29 @@ const baseConfig: VdxConfig = {
   trustRoots: [],
 };
 
-const baseDeps = (overrides: { source?: PackageSource; activeTransactions?: () => number } = {}) => ({
-  packageSource: overrides.source ?? makeSource(),
-  config: baseConfig,
-  hostVersion: '1.0.0',
-  cacheDir: '/tmp/test-cache',
-  activeTransactions: overrides.activeTransactions ?? (() => 0),
-  getTrustRoots: async () => [] as Uint8Array[],
-});
+const baseDeps = (
+  overrides: {
+    source?: PackageSource;
+    activeTransactions?: () => number;
+    stagedVersion?: string | null;
+    quit?: () => void;
+  } = {},
+) => {
+  let staged: string | null = overrides.stagedVersion ?? null;
+  return {
+    packageSource: overrides.source ?? makeSource(),
+    config: baseConfig,
+    hostVersion: '1.0.0',
+    cacheDir: '/tmp/test-cache',
+    activeTransactions: overrides.activeTransactions ?? (() => 0),
+    getTrustRoots: async () => [] as Uint8Array[],
+    quit: overrides.quit ?? (() => {}),
+    getStagedVersion: () => staged,
+    setStagedVersion: (v: string | null) => {
+      staged = v;
+    },
+  };
+};
 
 describe('update:check handler', () => {
   it('returns ok:true with info=null when no newer version exists', async () => {

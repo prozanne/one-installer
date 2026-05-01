@@ -1,6 +1,30 @@
 import { create } from 'zustand';
 import type { CatalogT, Manifest } from '@shared/schema';
-import type { AppsListResT, ProgressEventT } from '@shared/ipc-types';
+import type {
+  AppsListResT,
+  ProgressEventT,
+  UpdateAvailableEventT,
+} from '@shared/ipc-types';
+
+/**
+ * Self-update lifecycle. The renderer transitions:
+ *
+ *   idle → available  (background poll fired or check returned non-null)
+ *      → downloading  (user clicked the badge → updateRun)
+ *      → ready        (download succeeded; show "Restart now")
+ *      → applying     (user clicked Restart now → updateApply; main quits us)
+ *      → idle         (failure paths — clear out and let next poll retry)
+ *
+ * `info` carries through the whole flow so the user sees the same version
+ * label from announcement to restart.
+ */
+export type SelfUpdateState =
+  | { phase: 'idle' }
+  | { phase: 'available'; info: UpdateAvailableEventT }
+  | { phase: 'downloading'; info: UpdateAvailableEventT }
+  | { phase: 'ready'; info: UpdateAvailableEventT }
+  | { phase: 'applying'; info: UpdateAvailableEventT }
+  | { phase: 'error'; info: UpdateAvailableEventT | null; error: string };
 
 export interface SideloadState {
   sessionId: string;
@@ -29,6 +53,10 @@ export interface UiState {
   error: string | null;
   appCatalog: CatalogSlice;
   agentCatalog: CatalogSlice;
+  selfUpdate: SelfUpdateState;
+  setSelfUpdate: (s: SelfUpdateState) => void;
+  runSelfUpdate: () => Promise<void>;
+  applySelfUpdate: () => Promise<void>;
   refreshApps: () => Promise<void>;
   startSideload: (vdxpkgPath: string) => Promise<{ ok: boolean; error?: string }>;
   refreshCatalog: (kind: 'app' | 'agent') => Promise<void>;
@@ -61,6 +89,32 @@ export const useStore = create<UiState>()((set, get) => ({
   error: null,
   appCatalog: emptyCatalog(),
   agentCatalog: emptyCatalog(),
+  selfUpdate: { phase: 'idle' },
+  setSelfUpdate(s) {
+    set({ selfUpdate: s });
+  },
+  async runSelfUpdate() {
+    const cur = get().selfUpdate;
+    if (cur.phase !== 'available') return;
+    set({ selfUpdate: { phase: 'downloading', info: cur.info } });
+    const res = await window.vdxIpc.updateRun();
+    if (res.ok) {
+      set({ selfUpdate: { phase: 'ready', info: cur.info } });
+    } else {
+      set({ selfUpdate: { phase: 'error', info: cur.info, error: res.error } });
+    }
+  },
+  async applySelfUpdate() {
+    const cur = get().selfUpdate;
+    if (cur.phase !== 'ready') return;
+    set({ selfUpdate: { phase: 'applying', info: cur.info } });
+    const res = await window.vdxIpc.updateApply();
+    if (!res.ok) {
+      // Apply failed — drop back to ready so the user can retry.
+      set({ selfUpdate: { phase: 'error', info: cur.info, error: res.error } });
+    }
+    // On success the host is about to quit; nothing more to do here.
+  },
   async refreshApps() {
     set({ loadingApps: true });
     try {

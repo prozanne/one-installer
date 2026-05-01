@@ -28,7 +28,7 @@ import {
 import { checkCatalogFreshness, getFreshnessAnchor } from './catalog/freshness';
 import { resolveTrustRoots } from './config/trust-roots';
 import { handleSettingsGet, handleSettingsSet } from './ipc/handlers/settings';
-import { handleUpdateCheck, handleUpdateRun } from './ipc/handlers/update';
+import { handleUpdateApply, handleUpdateCheck, handleUpdateRun } from './ipc/handlers/update';
 import { handleDiagExport, handleDiagOpenLogs } from './ipc/handlers/diag';
 import { handleAuthSetToken, handleAuthClearToken } from './ipc/handlers/auth';
 import { handleAppsList } from './ipc/handlers/apps';
@@ -932,6 +932,11 @@ async function main(): Promise<void> {
   // update:check — query PackageSource for a newer host version
   // -----------------------------------------------------------------------
 
+  // Track the most-recently-staged update so update:apply can find the file.
+  // Lifetime is the host process: no need to persist — a relaunch either
+  // succeeds (new host doesn't need to know about the old staged file) or
+  // fails (next launch can re-run update:check + update:run).
+  let stagedUpdateVersion: string | null = null;
   const updateDeps = {
     packageSource,
     config,
@@ -939,9 +944,46 @@ async function main(): Promise<void> {
     cacheDir: paths.cacheDir,
     activeTransactions: () => activeTransactions,
     getTrustRoots,
+    quit: () => app.quit(),
+    getStagedVersion: () => stagedUpdateVersion,
+    setStagedVersion: (v: string | null) => {
+      stagedUpdateVersion = v;
+    },
   };
   ipcMain.handle(IpcChannels.updateCheck, (_e, raw) => handleUpdateCheck(updateDeps, raw));
   ipcMain.handle(IpcChannels.updateRun, (_e, raw) => handleUpdateRun(updateDeps, raw));
+  ipcMain.handle(IpcChannels.updateApply, (_e, raw) => handleUpdateApply(updateDeps, raw));
+
+  // Background self-update polling. Fires once at startup (5 s after launch
+  // so the first paint isn't blocked by the network) and every 6 hours
+  // thereafter. Each tick calls `update:check`; if a newer version exists
+  // and one wasn't already announced, broadcast `update:available` so the
+  // renderer can show its badge. We never *download* in the background —
+  // that's the user's explicit click on update:run, to keep the bandwidth
+  // and disk decisions opt-in.
+  let lastAnnouncedVersion: string | null = null;
+  const SIX_HOURS_MS = 6 * 60 * 60 * 1000;
+  const pollSelfUpdate = async (): Promise<void> => {
+    try {
+      const res = await handleUpdateCheck(updateDeps, {});
+      if (!res.ok || !res.info) return;
+      if (res.info.latestVersion === lastAnnouncedVersion) return;
+      lastAnnouncedVersion = res.info.latestVersion;
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send(IpcChannels.updateAvailable, res.info);
+      }
+    } catch {
+      // Background poll never raises to the user — they will discover it
+      // on the next manual click.
+    }
+  };
+  setTimeout(() => {
+    void pollSelfUpdate();
+  }, 5_000);
+  const pollInterval = setInterval(() => {
+    void pollSelfUpdate();
+  }, SIX_HOURS_MS);
+  app.on('before-quit', () => clearInterval(pollInterval));
 
   // -----------------------------------------------------------------------
   // auth:setToken / auth:clearToken — first-run PAT flow.

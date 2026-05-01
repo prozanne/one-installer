@@ -6,10 +6,13 @@
  * tests can construct fakes for the source / config / paths without touching
  * Electron at all.
  */
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
+  UpdateApplyReq,
   UpdateCheckReq,
   UpdateRunReq,
+  type UpdateApplyResT,
   type UpdateCheckResT,
   type UpdateRunResT,
 } from '@shared/ipc-types';
@@ -17,6 +20,7 @@ import type { Manifest } from '@shared/schema';
 import type { PackageSource } from '@shared/source/package-source';
 import type { VdxConfig } from '@shared/config/vdx-config';
 import {
+  applyHostUpdate,
   checkForHostUpdate,
   downloadHostUpdate,
   SELF_UPDATE_APP_ID,
@@ -33,6 +37,19 @@ export interface UpdateHandlerDeps {
   activeTransactions: () => number;
   /** The trust-root union, including dev key when developerMode is on. */
   getTrustRoots: () => Promise<Uint8Array[]>;
+  /**
+   * Process exit hook called by `update:apply` once the staged installer
+   * has been spawned. Production wires this to `app.quit()`; tests pass a spy.
+   */
+  quit: () => void;
+  /**
+   * Most recently staged version. `update:run` sets this on success;
+   * `update:apply` reads it to locate the .staged file. Lives only for
+   * the host process lifetime (not in installed.json) — a fresh launch
+   * after a failed apply re-discovers via filesystem scan if needed.
+   */
+  getStagedVersion: () => string | null;
+  setStagedVersion: (version: string | null) => void;
 }
 
 function selfUpdateConfigOf(config: VdxConfig): { repo: string } | null {
@@ -102,10 +119,52 @@ export async function handleUpdateRun(
       expectedSha256: updateManifest.payload.sha256,
     });
 
-    // Phase 1.2 will add Authenticode verify + replace-on-restart here. Until
-    // then the staged file just sits in cache; nothing relaunches.
+    // Record the staged version so update:apply can find the file. Renderer
+    // surfaces a "Restart to apply" badge after this resolves.
+    deps.setStagedVersion(info.latestVersion);
     return { ok: true };
   } catch (e) {
     return ipcError(e);
   }
+}
+
+/**
+ * Apply the previously-staged update — run the NSIS upgrade silently and
+ * quit the host so the new installer can replace files in place.
+ *
+ * Refuses if no staged version is on record (the renderer should hide the
+ * Restart button in that case anyway, but we still gate server-side so a
+ * stale window can't accidentally relaunch). Refuses if a transaction is
+ * mid-flight, same as `update:run`.
+ */
+export async function handleUpdateApply(
+  deps: UpdateHandlerDeps,
+  raw: unknown,
+): Promise<UpdateApplyResT> {
+  const parsed = UpdateApplyReq.safeParse(raw);
+  if (!parsed.success) return { ok: false, error: 'invalid request' };
+  if (deps.activeTransactions() > 0) {
+    return {
+      ok: false,
+      error: 'An install is in progress. Complete or cancel it before restarting.',
+    };
+  }
+  const stagedVersion = deps.getStagedVersion();
+  if (!stagedVersion) {
+    return { ok: false, error: 'No staged update — run update:run first.' };
+  }
+  const stagedPath = join(deps.cacheDir, `vdx-installer-${stagedVersion}.staged`);
+  if (!existsSync(stagedPath)) {
+    // Stale state — clear it so the renderer hides the badge.
+    deps.setStagedVersion(null);
+    return { ok: false, error: `Staged installer missing on disk: ${stagedPath}` };
+  }
+  const result = await applyHostUpdate({
+    stagedPath,
+    onQuit: deps.quit,
+  });
+  if (!result.ok) {
+    return { ok: false, error: result.error };
+  }
+  return { ok: true };
 }

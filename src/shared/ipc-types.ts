@@ -16,6 +16,8 @@ export const IpcChannels = {
   diagOpenLogs: 'diag:open-logs',
   updateCheck: 'update:check',
   updateRun: 'update:run',
+  updateApply: 'update:apply',
+  updateAvailable: 'update:available',
   authSetToken: 'auth:setToken',
   authClearToken: 'auth:clearToken',
 } as const;
@@ -205,8 +207,33 @@ export const UpdateRunRes = z.discriminatedUnion('ok', [
   z.object({ ok: z.literal(false), error: z.string() }),
 ]);
 
+/**
+ * Apply the previously-staged update — relaunch into the new installer.
+ * Distinct from UpdateRun (which only downloads) so a user can stage an
+ * update at one time and decide to restart later. The renderer only
+ * surfaces this button after a successful UpdateRun.
+ */
+export const UpdateApplyReq = z.object({ confirm: z.literal(true) });
+export const UpdateApplyRes = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true) }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+]);
+
+/**
+ * Server-pushed event broadcast when a background poll detected a new
+ * host version. Fields mirror UpdateInfo so the renderer can render the
+ * version + release notes without a follow-up `update:check` round-trip.
+ * Sent only on transitions (no version → some version, or upward semver
+ * change) so the renderer doesn't get spammed.
+ */
+export const UpdateAvailableEvent = UpdateInfoSchema;
+
 export type UpdateCheckReqT = z.infer<typeof UpdateCheckReq>;
 export type UpdateCheckResT = z.infer<typeof UpdateCheckRes>;
+export type UpdateApplyReqT = z.infer<typeof UpdateApplyReq>;
+export type UpdateApplyResT = z.infer<typeof UpdateApplyRes>;
+export type UpdateAvailableEventT = z.infer<typeof UpdateAvailableEvent>;
+export type UpdateInfoT = z.infer<typeof UpdateInfoSchema>;
 export type UpdateRunReqT = z.infer<typeof UpdateRunReq>;
 export type UpdateRunResT = z.infer<typeof UpdateRunRes>;
 
