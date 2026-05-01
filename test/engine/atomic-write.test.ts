@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { atomicWriteJson, readJsonOrDefault } from '@main/state/atomic-write';
+import { atomicWriteJson, readJsonWithBakFallback } from '@main/state/atomic-write';
 import { MockPlatform } from '@main/platform';
 
 describe('atomicWriteJson', () => {
@@ -19,9 +19,16 @@ describe('atomicWriteJson', () => {
     });
   });
 
-  it('readJsonOrDefault returns default if missing', async () => {
+  it('readJsonWithBakFallback returns default if both files missing', async () => {
     const p = new MockPlatform();
-    expect(await readJsonOrDefault('/missing.json', () => ({ z: 0 }), p.fs)).toEqual({ z: 0 });
+    const r = await readJsonWithBakFallback(
+      '/missing.json',
+      '/missing.json.bak',
+      () => ({ z: 0 }),
+      p.fs,
+    );
+    expect(r.value).toEqual({ z: 0 });
+    expect(r.status).toBe('default');
   });
 
   it('falls back to copy+delete when rename throws EXDEV', async () => {

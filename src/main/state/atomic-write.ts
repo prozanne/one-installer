@@ -54,19 +54,6 @@ export async function atomicWriteJson(
   }
 }
 
-export async function readJsonOrDefault<T>(
-  path: string,
-  defaultValue: () => T,
-  fs: FsLike = nodeFs,
-): Promise<T> {
-  try {
-    const buf = await (fs as IFs).promises.readFile(path);
-    return JSON.parse(buf.toString()) as T;
-  } catch {
-    return defaultValue();
-  }
-}
-
 export type ReadStatus = 'primary' | 'bak' | 'default';
 
 /**

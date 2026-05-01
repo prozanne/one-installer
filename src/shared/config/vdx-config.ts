@@ -129,11 +129,17 @@ const ProxyConfig = z.discriminatedUnion('kind', [
  * GitHub Pages operators to host a full PackageSource layout. URLs only —
  * trust still flows through the same trustRoots.
  */
-const AgentCatalogConfig = z.object({
-  url: z.string().url(),
-  sigUrl: z.string().url(),
-});
+const AgentCatalogConfig = z
+  .object({
+    url: z.string().url(),
+    sigUrl: z.string().url(),
+  })
+  .strict();
 
+// Strict on the operator-edited config so a typo in vdx.config.json
+// (`developperMode: true`, `trustRoot: [...]`) fails loudly at startup
+// instead of silently being stripped — exactly the kind of footgun a
+// flexible-by-default schema invites.
 export const VdxConfigSchema = z.object({
   schemaVersion: z.literal(1),
   source: SourceConfig,
@@ -143,7 +149,7 @@ export const VdxConfigSchema = z.object({
   proxy: ProxyConfig.optional(),
   telemetry: z.boolean().default(true),
   developerMode: z.boolean().default(false),
-});
+}).strict();
 
 export type VdxConfig = z.infer<typeof VdxConfigSchema>;
 

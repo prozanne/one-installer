@@ -29,7 +29,10 @@ export const execHandler: ActionHandler<'exec'> = {
     const hash = await ctx.platform.fileSha256(cmd);
     const allowed = new Set(action.allowedHashes.map((h) => h.replace(/^sha256:/, '')));
     if (!allowed.has(hash)) {
-      throw new Error(`exec binary hash mismatch (${hash}) — not in allowedHashes`);
+      // 8-char hash prefix only — full digest would be scrubbed by the
+      // ipcError redactor as a "long hex" string, destroying diagnostic value.
+      // The prefix is enough to identify which build is on disk for support.
+      throw new Error(`exec binary hash mismatch (${hash.slice(0, 8)}…) — not in allowedHashes`);
     }
     const result = await ctx.platform.exec({
       cmd,

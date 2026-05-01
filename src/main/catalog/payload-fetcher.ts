@@ -55,9 +55,14 @@ export async function* fetchPayloadStream(
     : opts.expectedSha256;
 
   if (actualHash !== expected) {
+    // Truncate to 8-char prefix so the message remains diagnostic ("did the
+    // mirror serve the wrong bytes vs did the manifest say something stale?")
+    // without tripping the redactor's long-hex pattern. SHA-256 hashes are
+    // public-anyway content but redact() can't tell that, so we present a
+    // short fingerprint that survives scrubbing.
     throw new Error(
       `Payload hash mismatch for ${appId}@${version}: ` +
-        `expected ${expected}, got ${actualHash}`,
+        `expected ${expected.slice(0, 8)}…, got ${actualHash.slice(0, 8)}…`,
     );
   }
 }

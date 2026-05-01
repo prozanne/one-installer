@@ -28,8 +28,12 @@ const LONG_HEX_RE = /\b(0x)?[a-fA-F0-9]{32,}\b/g;
 const SLACK_RE = /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g;
 const AWS_RE = /\bAKIA[0-9A-Z]{16}\b/g;
 
-const HOME_RE_POSIX = /\/Users\/[^/\s]+/g;
-const HOME_RE_WIN = /C:\\Users\\[^\\\s]+/gi;
+// Match `/Users/<name>` but NOT the well-known shared accounts (Public,
+// Shared, Guest) which aren't user-specific and stripping them adds no
+// privacy benefit while losing context for support engineers reading
+// stack traces or paths.
+const HOME_RE_POSIX = /\/Users\/(?!(?:Public|Shared|Guest)\b)[^/\s]+/g;
+const HOME_RE_WIN = /C:\\Users\\(?!(?:Public|Shared|Default)\b)[^\\\s]+/gi;
 
 export function redact(input: string): string {
   return input

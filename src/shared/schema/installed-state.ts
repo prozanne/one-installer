@@ -36,13 +36,21 @@ const InstalledApp = z.object({
   kind: z.enum(['app', 'agent']).default('app'),
 });
 
+// Intentionally NOT `.strict()`. This schema is for state we wrote ourselves
+// (host's own installed.json). A future host version might add fields a
+// reader on the older build doesn't know about; if we strict-reject those,
+// `installed-store.read()` falls through to .bak (which carries the same
+// forward-compat shape and ALSO rejects), then to `defaults()` — silently
+// wiping the user's install registry. Strip-unknown is the right default
+// for "we own this data" schemas; strict is reserved for external input
+// (Manifest, Catalog, vdx.config.json).
 export const InstalledStateSchema = z.object({
   schema: z.literal(1),
   host: z.object({ version: z.string() }),
   lastCatalogSync: z.string().datetime().nullable(),
   settings: Settings,
   apps: z.record(z.string(), InstalledApp),
-}).strict();
+});
 
 export type InstalledStateT = z.infer<typeof InstalledStateSchema>;
 export type InstalledAppT = z.infer<typeof InstalledApp>;

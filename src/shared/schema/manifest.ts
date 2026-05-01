@@ -106,6 +106,15 @@ const ShortcutAction = z.object({
   when: z.string().optional(),
 });
 
+// REG_MULTI_SZ entries: in addition to NoControlChars, reject the literal
+// two-character sequence `\0` (backslash followed by zero). The Windows
+// platform impl uses that exact substring as the entry separator when it
+// shells out to reg.exe; an entry containing `\0` would split mid-value
+// during the reg.exe round-trip and produce a different array on read-back.
+const MultiSzEntry = NoControlChars.refine((s) => !s.includes('\\0'), {
+  message: 'REG_MULTI_SZ entry must not contain the literal sequence "\\0" (backslash + zero)',
+});
+
 const RegistryValue = z.object({
   type: z.enum(['REG_SZ', 'REG_DWORD', 'REG_QWORD', 'REG_EXPAND_SZ', 'REG_MULTI_SZ', 'REG_BINARY']),
   // Reject NUL/control bytes in REG_SZ-style strings — Win32 truncates at NUL,
@@ -114,7 +123,7 @@ const RegistryValue = z.object({
   data: z.union([
     NoControlChars,
     z.number(),
-    z.array(NoControlChars),
+    z.array(MultiSzEntry),
   ]),
 });
 
