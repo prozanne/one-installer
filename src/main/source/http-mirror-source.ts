@@ -486,19 +486,34 @@ export class HttpMirrorSource implements PackageSource {
         ): void {
           nodeStream = res;
 
+          // `throwSourceError` synchronously throws. Inside the `'response'` event
+          // emitter callback, that throw escapes the await chain and surfaces as
+          // an uncaughtException. Convert any thrown SourceError into a
+          // promise-based rejection by routing through this trampoline.
+          const rejectVia = (fn: () => never): void => {
+            try {
+              fn();
+            } catch (e) {
+              reject(e);
+            }
+          };
+
           // T-06: If a range was requested with non-zero start, server MUST respond 206.
           // A 200 response to a range request means the server ignored the Range header
           // and returned the full file from byte 0 — this would silently corrupt a resume.
           if (res.statusCode === 200 && range && range.start > 0) {
             streamDone = true;
             res.resume();
-            throwSourceError({
-              kind: 'InvalidResponseError',
-              message:
-                'Server returned 200 instead of 206 for Range request; server does not support resumable download',
-              statusCode: 200,
-              retryable: false,
-            });
+            rejectVia(() =>
+              throwSourceError({
+                kind: 'InvalidResponseError',
+                message:
+                  'Server returned 200 instead of 206 for Range request; server does not support resumable download',
+                statusCode: 200,
+                retryable: false,
+              }),
+            );
+            return;
           }
 
           if (res.statusCode !== 200 && res.statusCode !== 206) {
@@ -507,23 +522,30 @@ export class HttpMirrorSource implements PackageSource {
             const sc = res.statusCode ?? 0;
             res.resume();
             if (sc === 404) {
-              throwSourceError({
-                kind: 'NotFoundError',
-                message: 'Payload not found (HTTP 404)',
-                resource: payloadUrl,
-                retryable: false,
-              });
+              rejectVia(() =>
+                throwSourceError({
+                  kind: 'NotFoundError',
+                  message: 'Payload not found (HTTP 404)',
+                  resource: payloadUrl,
+                  retryable: false,
+                }),
+              );
+              return;
             }
             if (sc === 416) {
               // Range not satisfiable — surface as InvalidResponseError
-              throwSourceError({
-                kind: 'InvalidResponseError',
-                message: 'Range not satisfiable (HTTP 416)',
-                statusCode: 416,
-                retryable: false,
-              });
+              rejectVia(() =>
+                throwSourceError({
+                  kind: 'InvalidResponseError',
+                  message: 'Range not satisfiable (HTTP 416)',
+                  statusCode: 416,
+                  retryable: false,
+                }),
+              );
+              return;
             }
-            mapStatusError(sc, payloadUrl, tokenPresent);
+            rejectVia(() => mapStatusError(sc, payloadUrl, tokenPresent));
+            return;
           }
 
           res.on('data', (chunk: Buffer) => {

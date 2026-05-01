@@ -12,6 +12,15 @@ import type {
   CatalogFetchResT,
   CatalogInstallReqT,
   CatalogInstallResT,
+  SettingsGetReqT,
+  SettingsGetResT,
+  SettingsSetReqT,
+  SettingsSetResT,
+  DiagExportResT,
+  DiagOpenLogsReqT,
+  DiagOpenLogsResT,
+  UpdateCheckResT,
+  UpdateRunResT,
 } from '@shared/ipc-types';
 
 const ipcApi = {
@@ -35,6 +44,24 @@ const ipcApi = {
   },
   async catalogInstall(req: CatalogInstallReqT): Promise<CatalogInstallResT> {
     return ipcRenderer.invoke(IpcChannels.catalogInstall, req);
+  },
+  async settingsGet(req?: SettingsGetReqT): Promise<SettingsGetResT> {
+    return ipcRenderer.invoke(IpcChannels.settingsGet, req ?? {});
+  },
+  async settingsSet(req: SettingsSetReqT): Promise<SettingsSetResT> {
+    return ipcRenderer.invoke(IpcChannels.settingsSet, req);
+  },
+  async diagExport(): Promise<DiagExportResT> {
+    return ipcRenderer.invoke(IpcChannels.diagExport, {});
+  },
+  async diagOpenLogs(req: DiagOpenLogsReqT): Promise<DiagOpenLogsResT> {
+    return ipcRenderer.invoke(IpcChannels.diagOpenLogs, req);
+  },
+  async updateCheck(): Promise<UpdateCheckResT> {
+    return ipcRenderer.invoke(IpcChannels.updateCheck, {});
+  },
+  async updateRun(): Promise<UpdateRunResT> {
+    return ipcRenderer.invoke(IpcChannels.updateRun, { confirm: true });
   },
   onProgress(cb: (ev: ProgressEventT) => void): () => void {
     const listener = (_e: IpcRendererEvent, payload: ProgressEventT) => cb(payload);

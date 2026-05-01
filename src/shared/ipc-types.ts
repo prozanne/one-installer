@@ -10,6 +10,12 @@ export const IpcChannels = {
   pickVdxpkg: 'sideload:pick',
   catalogFetch: 'catalog:fetch',
   catalogInstall: 'catalog:install',
+  settingsGet: 'settings:get',
+  settingsSet: 'settings:set',
+  diagExport: 'diag:export',
+  diagOpenLogs: 'diag:open-logs',
+  updateCheck: 'update:check',
+  updateRun: 'update:run',
 } as const;
 
 export const CatalogKindSchema = z.enum(['app', 'agent']);
@@ -86,9 +92,25 @@ export const UninstallRunRes = z.discriminatedUnion('ok', [
 export const AppsListRes = InstalledStateSchema.shape.apps;
 
 export const ProgressEvent = z.object({
-  phase: z.enum(['extract', 'actions', 'arp', 'commit', 'rollback', 'done', 'error']),
+  phase: z.enum([
+    'download',
+    'verify',
+    'extract',
+    'actions',
+    'arp',
+    'commit',
+    'rollback',
+    'done',
+    'error',
+  ]),
   message: z.string(),
   percent: z.number().min(0).max(100).optional(),
+  /** Bytes downloaded so far, set during the 'download' phase. */
+  downloadedBytes: z.number().nonnegative().optional(),
+  /** Total bytes of the asset being downloaded; absent when Content-Length not known. */
+  totalBytes: z.number().nonnegative().optional(),
+  /** Instantaneous download speed in bytes/sec, set during the 'download' phase. */
+  bytesPerSec: z.number().nonnegative().optional(),
 });
 
 export type SideloadOpenResT = z.infer<typeof SideloadOpenRes>;
@@ -102,3 +124,80 @@ export type CatalogFetchReqT = z.infer<typeof CatalogFetchReq>;
 export type CatalogFetchResT = z.infer<typeof CatalogFetchRes>;
 export type CatalogInstallReqT = z.infer<typeof CatalogInstallReq>;
 export type CatalogInstallResT = z.infer<typeof CatalogInstallRes>;
+
+// ---------------------------------------------------------------------------
+// Settings IPC
+// ---------------------------------------------------------------------------
+
+const SettingsSchema = InstalledStateSchema.shape.settings;
+export type Settings = z.infer<typeof SettingsSchema>;
+
+export const SettingsGetReq = z.object({
+  key: SettingsSchema.keyof().optional(),
+});
+export const SettingsGetRes = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), settings: SettingsSchema }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+]);
+
+export const SettingsSetReq = z.object({
+  patch: SettingsSchema.partial(),
+});
+export const SettingsSetRes = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), settings: SettingsSchema }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+]);
+
+export type SettingsGetReqT = z.infer<typeof SettingsGetReq>;
+export type SettingsGetResT = z.infer<typeof SettingsGetRes>;
+export type SettingsSetReqT = z.infer<typeof SettingsSetReq>;
+export type SettingsSetResT = z.infer<typeof SettingsSetRes>;
+
+// ---------------------------------------------------------------------------
+// Diagnostics IPC
+// ---------------------------------------------------------------------------
+
+export const DiagExportReq = z.object({});
+export const DiagExportRes = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), archivePath: z.string() }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+]);
+
+export const DiagOpenLogsReq = z.object({ targetDir: z.string() });
+export const DiagOpenLogsRes = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true) }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+]);
+
+export type DiagExportReqT = z.infer<typeof DiagExportReq>;
+export type DiagExportResT = z.infer<typeof DiagExportRes>;
+export type DiagOpenLogsReqT = z.infer<typeof DiagOpenLogsReq>;
+export type DiagOpenLogsResT = z.infer<typeof DiagOpenLogsRes>;
+
+// ---------------------------------------------------------------------------
+// Self-update IPC
+// ---------------------------------------------------------------------------
+
+const UpdateInfoSchema = z.object({
+  latestVersion: z.string(),
+  currentVersion: z.string(),
+  downloadUrl: z.string().url(),
+  releaseNotes: z.string().optional(),
+});
+
+export const UpdateCheckReq = z.object({});
+export const UpdateCheckRes = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true), info: UpdateInfoSchema.nullable() }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+]);
+
+export const UpdateRunReq = z.object({ confirm: z.literal(true) });
+export const UpdateRunRes = z.discriminatedUnion('ok', [
+  z.object({ ok: z.literal(true) }),
+  z.object({ ok: z.literal(false), error: z.string() }),
+]);
+
+export type UpdateCheckReqT = z.infer<typeof UpdateCheckReq>;
+export type UpdateCheckResT = z.infer<typeof UpdateCheckRes>;
+export type UpdateRunReqT = z.infer<typeof UpdateRunReq>;
+export type UpdateRunResT = z.infer<typeof UpdateRunRes>;

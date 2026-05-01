@@ -1,12 +1,17 @@
 import { app, BrowserWindow, ipcMain, dialog, shell } from 'electron';
 import { join } from 'node:path';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, createWriteStream } from 'node:fs';
+import { readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import * as nodeFs from 'node:fs';
+import * as yazl from 'yazl';
 
 import { resolveHostPaths, ensureDevKeyPair, HOST_VERSION } from './host';
 import { MockPlatform } from './platform';
+import { createProgressThrottle } from './progress-throttle';
+import { CatalogCache } from './catalog-cache';
+import { fetchCatalog, fetchPackage } from './catalog-http';
 import {
   createInstalledStore,
   createJournalStore,
@@ -15,8 +20,14 @@ import {
   runInstall,
   runUninstall,
 } from './engine';
-import { loadConfig } from './config';
-import { fetchCatalog, fetchPackage } from './catalog-http';
+import { loadVdxConfig } from './config/load-config';
+import { createPackageSource } from './source/factory';
+import {
+  fetchCatalogVerified,
+  fetchManifestVerified,
+  fetchPayloadStream,
+} from './catalog';
+import { checkForHostUpdate, downloadHostUpdate } from './updater';
 import {
   IpcChannels,
   SideloadOpenReq,
@@ -24,6 +35,12 @@ import {
   UninstallRunReq,
   CatalogFetchReq,
   CatalogInstallReq,
+  SettingsGetReq,
+  SettingsSetReq,
+  DiagExportReq,
+  DiagOpenLogsReq,
+  UpdateCheckReq,
+  UpdateRunReq,
   type SideloadOpenResT,
   type InstallRunResT,
   type UninstallRunResT,
@@ -32,10 +49,20 @@ import {
   type CatalogFetchResT,
   type CatalogInstallResT,
   type CatalogKindT,
+  type SettingsGetResT,
+  type SettingsSetResT,
+  type DiagExportResT,
+  type DiagOpenLogsResT,
+  type UpdateCheckResT,
+  type UpdateRunResT,
 } from '@shared/ipc-types';
 import type { CatalogT, Manifest } from '@shared/schema';
+import type { PackageSource } from '@shared/source/package-source';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
+
+/** Maximum number of concurrent sideload sessions before we evict the oldest. */
+const MAX_SIDELOAD_SESSIONS = 8;
 
 interface SideloadSession {
   manifest: Manifest;
@@ -46,13 +73,27 @@ interface SideloadSession {
 }
 const sideloadSessions = new Map<string, SideloadSession>();
 
+/** Evict the oldest session if the map is at capacity. */
+function evictOldestSideloadSession(): void {
+  if (sideloadSessions.size >= MAX_SIDELOAD_SESSIONS) {
+    const oldest = sideloadSessions.keys().next().value;
+    if (oldest !== undefined) sideloadSessions.delete(oldest);
+  }
+}
+
 interface CatalogCacheEntry {
   catalog: CatalogT;
-  signatureValid: boolean;
+  /** Opaque ETag from the source for conditional re-fetch. */
+  etag?: string | undefined;
   fetchedAt: string;
-  sourceUrl: string;
+  signatureValid?: boolean;
+  sourceUrl?: string;
 }
-const catalogCache = new Map<CatalogKindT, CatalogCacheEntry>();
+// One entry per kind. R2 source backs the 'app' kind; the 'agent' kind is
+// fetched directly from a static GitHub Pages URL (vdx.config.json
+// `agentCatalog`). Both share the disk cache so cold-start tab opens are
+// instant.
+const catalogCacheEntries: Map<CatalogKindT, CatalogCacheEntry> = new Map();
 
 let mainWindow: BrowserWindow | null = null;
 
@@ -62,6 +103,11 @@ function createWindow(): void {
     height: 720,
     backgroundColor: '#FBFBFA',
     title: 'VDX Installer',
+    // Defer paint until the renderer has actually mounted. Prevents the
+    // jarring "white flash → splash → real UI" sequence Electron defaults
+    // to. With backgroundColor + show:false + ready-to-show the user sees
+    // their themed canvas the first frame the window appears.
+    show: false,
     webPreferences: {
       preload: join(__dirname, '../preload/index.mjs'),
       contextIsolation: true,
@@ -73,6 +119,10 @@ function createWindow(): void {
   });
 
   mainWindow.removeMenu();
+
+  mainWindow.once('ready-to-show', () => {
+    mainWindow?.show();
+  });
 
   const devUrl = process.env['ELECTRON_RENDERER_URL'];
   if (devUrl) {
@@ -102,11 +152,13 @@ function createWindow(): void {
 }
 
 /**
- * Allow only http/https URLs through `shell.openExternal`. Without this gate
+ * Allow only https: URLs through `shell.openExternal`. Without this gate
  * `setWindowOpenHandler` would happily launch `file://`, `vscode://`, or
  * other privileged Windows URI schemes — a code-execution sink reachable
  * from any markup the renderer rendered (e.g. a malicious manifest's
- * `supportUrl`).
+ * `supportUrl`). Plain http: is also rejected: design spec §6.6 mandates
+ * https-only for any URL we hand to the OS browser, so a malicious manifest
+ * can't redirect traffic through an attacker-controlled cleartext server.
  */
 function isSafeExternalUrl(raw: string): boolean {
   let parsed: URL;
@@ -115,13 +167,28 @@ function isSafeExternalUrl(raw: string): boolean {
   } catch {
     return false;
   }
-  return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+  return parsed.protocol === 'https:';
 }
 
-function emitProgress(ev: ProgressEventT): void {
+/**
+ * Forward a single progress event to the renderer. Bypasses the throttle —
+ * use `progressThrottle.emit()` everywhere except from inside the throttle
+ * itself.
+ */
+function sendProgressUnthrottled(ev: ProgressEventT): void {
+  // Scope to mainWindow.webContents.id only — never broadcast to all windows.
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(IpcChannels.installProgress, ev);
   }
+}
+
+const progressThrottle = createProgressThrottle({
+  intervalMs: 33, // ~30 Hz, plenty for human eyes, cheap on IPC
+  forward: sendProgressUnthrottled,
+});
+
+function emitProgress(ev: ProgressEventT): void {
+  progressThrottle.emit(ev);
 }
 
 async function main(): Promise<void> {
@@ -149,17 +216,77 @@ async function main(): Promise<void> {
   };
 
   // Phase 1.1: still using MockPlatform during dev. Real Windows platform is Phase 1.2.
-  // The installed-store, journal-store, and lock files use the real node fs through MockPlatform's
-  // memfs-typed signature — but here we want them to write to the real disk so user data persists
-  // across launches. So we instantiate them with `nodeFs` directly.
   const installedStore = createInstalledStore(paths.installedJson, nodeFs, HOST_VERSION);
   const journalStore = createJournalStore(paths.journalDir, nodeFs);
   const platform = new MockPlatform();
   const runner = createTransactionRunner({ journal: journalStore });
-  // Catalog URLs come from vdx.config.json (next to the EXE in production, or
-  // the project root in dev). Defaults are placeholders pointing at the
-  // canonical org names — operators MUST override before shipping.
-  const config = loadConfig([process.cwd(), join(__dirname, '../..')]);
+
+  // Disk-backed catalog cache. Hydrated synchronously here so the very first
+  // catalog:fetch IPC after launch can short-circuit on the cached body even
+  // if the network is slow or down — the agents tab paints instantly with
+  // yesterday's items.
+  const catalogCache = new CatalogCache(paths.cacheDir);
+  for (const kind of ['app', 'agent'] as const) {
+    const hydrated = catalogCache.read(kind);
+    if (hydrated) {
+      catalogCacheEntries.set(kind, {
+        catalog: hydrated.catalog,
+        etag: hydrated.etag ?? undefined,
+        fetchedAt: hydrated.fetchedAt,
+        signatureValid: hydrated.signatureValid,
+        sourceUrl: hydrated.sourceUrl,
+      });
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // R2 config + source: resolve EXE-adjacent dir and appData dir per spec §6.
+  // In production: exeDir = dirname(process.execPath).
+  // In dev (electron-vite): process.execPath points to the dev electron binary;
+  // use process.cwd() as the exe-adjacent fallback so vdx.config.json in the
+  // project root is picked up during development.
+  // -----------------------------------------------------------------------
+  const exeDir = app.isPackaged
+    ? join(process.execPath, '..')
+    : process.cwd();
+  const appDataDir = app.getPath('appData');
+
+  const configResult = await loadVdxConfig({ exeDir, appDataDir });
+  if (!configResult.ok) {
+    // Hard failure at startup — surface to console and continue with no source.
+    // In production a dialog would be shown; for Phase 1.1 this is acceptable.
+    console.error('[vdx] Config load failed:', configResult.error.message);
+    app.quit();
+    return;
+  }
+  const config = configResult.value;
+
+  // Instantiate the PackageSource from config.
+  let packageSource: PackageSource;
+  try {
+    packageSource = await createPackageSource(config.source);
+  } catch (e) {
+    console.error('[vdx] Failed to create PackageSource:', (e as Error).message);
+    app.quit();
+    return;
+  }
+
+  // Trust roots: config.trustRoots (base64-encoded) + the dev key for Phase 1.1.
+  const getTrustRoots = async (): Promise<Uint8Array[]> => {
+    const roots: Uint8Array[] = [];
+    if (config.trustRoots) {
+      for (const b64 of config.trustRoots) {
+        roots.push(Buffer.from(b64, 'base64'));
+      }
+    }
+    // Always include the dev key as a trust root in Phase 1.1.
+    roots.push(await getDevPubKey());
+    return roots;
+  };
+
+  // -----------------------------------------------------------------------
+  // IPC handlers
+  // -----------------------------------------------------------------------
 
   ipcMain.handle(IpcChannels.appsList, async (): Promise<AppsListResT> => {
     const state = await installedStore.read();
@@ -170,7 +297,7 @@ async function main(): Promise<void> {
     if (!mainWindow) return { canceled: true };
     const result = await dialog.showOpenDialog(mainWindow, {
       title: 'Open .vdxpkg',
-      filters: [{ name: 'VDX Package', extensions: ['vdxpkg', 'zip'] }],
+      filters: [{ name: 'VDX Package', extensions: ['vdxpkg'] }],
       properties: ['openFile'],
     });
     return result;
@@ -179,9 +306,8 @@ async function main(): Promise<void> {
   ipcMain.handle(IpcChannels.sideloadOpen, async (_e, raw): Promise<SideloadOpenResT> => {
     const parsed = SideloadOpenReq.safeParse(raw);
     if (!parsed.success) return { ok: false, error: 'invalid request' };
-    // Only one sideload session is meaningful at a time; clear stale entries
-    // before opening a new one so a user who opens-then-cancels-then-opens
-    // doesn't accumulate Buffer-sized leaks.
+    // Evict the oldest session if at capacity, then clear stale entries.
+    evictOldestSideloadSession();
     sideloadSessions.clear();
     try {
       const bytes = nodeFs.readFileSync(parsed.data.vdxpkgPath);
@@ -215,8 +341,6 @@ async function main(): Promise<void> {
     if (!session) return { ok: false, error: 'session expired or unknown' };
     // Always release the session (and its full payload Buffer) when this
     // handler returns — success, validation failure, or thrown exception.
-    // Without this the cancel-from-wizard path leaks the entire ZIP until
-    // process exit.
     try {
       emitProgress({ phase: 'extract', message: 'Extracting payload...', percent: 10 });
       const installRes = await runInstall({
@@ -233,9 +357,6 @@ async function main(): Promise<void> {
         return { ok: false, error: installRes.error };
       }
       emitProgress({ phase: 'commit', message: 'Finalizing...', percent: 90 });
-      // The session's `kind` (app vs agent) is the authoritative tag.
-      // Renderer-supplied `parsed.data.kind` is only used as a fallback
-      // when the session was a plain sideload (no catalog provenance).
       const installedKind = session.kind === 'agent' ? 'agent' : parsed.data.kind;
       await installedStore.update((s) => {
         s.apps[session.manifest.id] = {
@@ -263,70 +384,257 @@ async function main(): Promise<void> {
     }
   });
 
+  // -----------------------------------------------------------------------
+  // catalog:fetch — R2 PackageSource for 'app' kind; agentCatalog HTTP for 'agent'.
+  // Both kinds share the on-disk CatalogCache so the next launch's first paint
+  // in Apps/Agents shows yesterday's items instantly while a background refresh
+  // (304-aware) reconciles ETags.
+  // -----------------------------------------------------------------------
   ipcMain.handle(IpcChannels.catalogFetch, async (_e, raw): Promise<CatalogFetchResT> => {
     const parsed = CatalogFetchReq.safeParse(raw);
     if (!parsed.success) {
       return { ok: false, error: 'invalid request', sourceUrl: null };
     }
-    const target = config.catalogs[parsed.data.kind];
-    try {
+    const kind = parsed.data.kind;
+
+    if (kind === 'agent') {
+      if (!config.agentCatalog) {
+        return {
+          ok: false,
+          error:
+            'No agentCatalog configured. Add { url, sigUrl } to vdx.config.json under "agentCatalog" pointing at your agent-catalog GitHub Pages.',
+          sourceUrl: null,
+        };
+      }
+      const cur = catalogCacheEntries.get('agent');
       const result = await fetchCatalog({
-        url: target.url,
-        sigUrl: target.sigUrl,
+        url: config.agentCatalog.url,
+        sigUrl: config.agentCatalog.sigUrl,
         publicKey: await getDevPubKey(),
-        timeoutMs: config.network.timeoutMs,
-        userAgent: config.network.userAgent,
+        timeoutMs: 15_000,
+        userAgent: `vdx-installer/${HOST_VERSION}`,
+        ifNoneMatch: cur?.etag ?? null,
       });
-      if (!result.ok) return { ok: false, error: result.error, sourceUrl: target.url };
-      catalogCache.set(parsed.data.kind, {
+      if (!result.ok) return { ok: false, error: result.error, sourceUrl: config.agentCatalog.url };
+
+      // 304: keep the cached body but refresh fetchedAt / etag.
+      if (result.value.notModified && cur) {
+        const refreshed: CatalogCacheEntry = {
+          ...cur,
+          fetchedAt: result.value.fetchedAt,
+          etag: result.value.etag ?? cur.etag,
+        };
+        catalogCacheEntries.set('agent', refreshed);
+        catalogCache?.write('agent', refreshed);
+        return {
+          ok: true,
+          catalog: cur.catalog,
+          signatureValid: cur.signatureValid ?? true,
+          fetchedAt: result.value.fetchedAt,
+          sourceUrl: config.agentCatalog.url,
+        };
+      }
+
+      const entry: CatalogCacheEntry = {
         catalog: result.value.catalog,
-        signatureValid: result.value.signatureValid,
+        etag: result.value.etag ?? undefined,
         fetchedAt: result.value.fetchedAt,
-        sourceUrl: target.url,
-      });
+        signatureValid: result.value.signatureValid,
+        sourceUrl: config.agentCatalog.url,
+      };
+      catalogCacheEntries.set('agent', entry);
+      catalogCache?.write('agent', entry);
       return {
         ok: true,
         catalog: result.value.catalog,
         signatureValid: result.value.signatureValid,
         fetchedAt: result.value.fetchedAt,
-        sourceUrl: target.url,
+        sourceUrl: config.agentCatalog.url,
+      };
+    }
+
+    // kind === 'app' — R2 PackageSource path.
+    try {
+      const trustRoots = await getTrustRoots();
+      const cur = catalogCacheEntries.get('app');
+      const result = await fetchCatalogVerified(packageSource, {
+        trustRoots,
+        cachedEtag: cur?.etag,
+      });
+
+      if ('notModified' in result) {
+        if (!cur) {
+          return {
+            ok: false,
+            error: 'Catalog not modified but no cached copy found.',
+            sourceUrl: packageSource.displayName,
+          };
+        }
+        return {
+          ok: true,
+          catalog: cur.catalog,
+          signatureValid: cur.signatureValid ?? true,
+          fetchedAt: cur.fetchedAt,
+          sourceUrl: packageSource.displayName,
+        };
+      }
+
+      const fetchedAt = new Date().toISOString();
+      const entry: CatalogCacheEntry = {
+        catalog: result.catalog,
+        etag: result.etag,
+        fetchedAt,
+        signatureValid: true,
+        sourceUrl: packageSource.displayName,
+      };
+      catalogCacheEntries.set('app', entry);
+      catalogCache?.write('app', entry);
+
+      return {
+        ok: true,
+        catalog: result.catalog,
+        signatureValid: true,
+        fetchedAt,
+        sourceUrl: packageSource.displayName,
       };
     } catch (e) {
-      return { ok: false, error: (e as Error).message, sourceUrl: target.url };
+      return { ok: false, error: (e as Error).message, sourceUrl: packageSource.displayName };
     }
   });
 
+  // -----------------------------------------------------------------------
+  // catalog:install — R2 implementation using PackageSource + fetchManifestVerified
+  // -----------------------------------------------------------------------
   ipcMain.handle(IpcChannels.catalogInstall, async (_e, raw): Promise<CatalogInstallResT> => {
     const parsed = CatalogInstallReq.safeParse(raw);
     if (!parsed.success) return { ok: false, error: 'invalid request' };
-    const cache = catalogCache.get(parsed.data.kind);
-    if (!cache) {
-      // Force the renderer to refresh first; we refuse to silently re-fetch
-      // here because that path would also need spinner UI feedback that the
-      // current call doesn't have.
+
+    const kind = parsed.data.kind;
+    const cur = catalogCacheEntries.get(kind);
+    if (!cur) {
       return { ok: false, error: 'Catalog not loaded yet — refresh the catalog tab first.' };
     }
-    const item = cache.catalog.apps.find((a) => a.id === parsed.data.appId);
+    const item = cur.catalog.apps.find((a) => a.id === parsed.data.appId);
     if (!item) return { ok: false, error: `Item not in catalog: ${parsed.data.appId}` };
-    if (!item.packageUrl) {
-      // Phase 2 will resolve `repo` via the GitHub Releases API; for now we
-      // require an explicit packageUrl. Return an actionable error so an
-      // operator editing catalog.json knows what to add.
-      return {
-        ok: false,
-        error: `Catalog entry '${item.id}' lacks packageUrl. Add a direct .vdxpkg URL or wait for Phase 2.`,
-      };
-    }
-    sideloadSessions.clear();
+
     try {
-      const pkgRes = await fetchPackage({
-        url: item.packageUrl,
-        timeoutMs: config.network.timeoutMs,
-        userAgent: config.network.userAgent,
+      const trustRoots = await getTrustRoots();
+
+      // Use latestVersion from catalog item to resolve manifest + payload.
+      const version = item.latestVersion ?? 'latest';
+
+      // Agent kind: catalog item supplies a direct packageUrl. We bypass the
+      // R2 source (which targets the App-catalog repo) and let parseVdxpkg
+      // handle the manifest+sig+payload trio in the downloaded .vdxpkg.
+      if (kind === 'agent') {
+        if (!item.packageUrl) {
+          return {
+            ok: false,
+            error: `Agent catalog entry '${item.id}' lacks packageUrl. Add a direct .vdxpkg URL.`,
+          };
+        }
+        emitProgress({ phase: 'download', message: 'Downloading…', downloadedBytes: 0, percent: 0 });
+        const pkgRes = await fetchPackage({
+          url: item.packageUrl,
+          timeoutMs: 60_000,
+          userAgent: `vdx-installer/${HOST_VERSION}`,
+          onProgress: ({ downloadedBytes, totalBytes }) => {
+            const percent =
+              totalBytes && totalBytes > 0
+                ? Math.min(99, Math.round((downloadedBytes / totalBytes) * 100))
+                : undefined;
+            emitProgress({
+              phase: 'download',
+              message: 'Downloading…',
+              downloadedBytes,
+              ...(totalBytes !== null ? { totalBytes } : {}),
+              ...(percent !== undefined ? { percent } : {}),
+            });
+          },
+        });
+        if (!pkgRes.ok) return { ok: false, error: pkgRes.error };
+        emitProgress({ phase: 'verify', message: 'Verifying signature…', percent: 100 });
+        const parseRes = await parseVdxpkg(pkgRes.value, await getDevPubKey());
+        if (!parseRes.ok) return { ok: false, error: parseRes.error };
+
+        evictOldestSideloadSession();
+        const sessionId = randomUUID();
+        sideloadSessions.set(sessionId, {
+          manifest: parseRes.value.manifest,
+          payloadBytes: parseRes.value.payloadBytes,
+          signatureValid: parseRes.value.signatureValid,
+          kind: 'agent',
+        });
+        const sysVars = platform.systemVars();
+        const defaultInstallPath = `${sysVars.LocalAppData}/Programs/Samsung/${parseRes.value.manifest.id}`;
+        return {
+          ok: true,
+          manifest: parseRes.value.manifest,
+          defaultInstallPath,
+          signatureValid: parseRes.value.signatureValid,
+          sessionId,
+          kind: 'agent',
+        };
+      }
+
+      // kind === 'app' — full R2 source path (manifest + sig + payload by URL convention).
+      let manifest: Manifest;
+      try {
+        manifest = await fetchManifestVerified(packageSource, item.id, version, {
+          trustRoots,
+        });
+      } catch (e) {
+        return { ok: false, error: `Manifest fetch failed: ${(e as Error).message}` };
+      }
+
+      // Stream payload into a Buffer for parseVdxpkg compatibility.
+      // fetchPayloadStream verifies SHA-256 inline. sha256 lives at manifest.payload.sha256.
+      // We emit `download` progress as bytes arrive; the throttle ensures
+      // at most ~30 IPC roundtrips per second even for fast networks.
+      const sha256 = manifest.payload.sha256;
+      const totalBytes = manifest.payload.compressedSize;
+      const chunks: Uint8Array[] = [];
+      let downloaded = 0;
+      emitProgress({
+        phase: 'download',
+        message: 'Downloading…',
+        downloadedBytes: 0,
+        totalBytes,
+        percent: 0,
       });
-      if (!pkgRes.ok) return { ok: false, error: pkgRes.error };
-      const parseRes = await parseVdxpkg(pkgRes.value, await getDevPubKey());
+      try {
+        for await (const chunk of fetchPayloadStream(packageSource, item.id, version, {
+          expectedSha256: sha256,
+        })) {
+          chunks.push(chunk);
+          downloaded += chunk.byteLength;
+          const percent = totalBytes > 0 ? Math.min(99, Math.round((downloaded / totalBytes) * 100)) : undefined;
+          emitProgress({
+            phase: 'download',
+            message: 'Downloading…',
+            downloadedBytes: downloaded,
+            totalBytes,
+            ...(percent !== undefined ? { percent } : {}),
+          });
+        }
+      } catch (e) {
+        return { ok: false, error: `Payload fetch failed: ${(e as Error).message}` };
+      }
+      emitProgress({
+        phase: 'verify',
+        message: 'Verifying signature…',
+        downloadedBytes: downloaded,
+        totalBytes,
+        percent: 100,
+      });
+
+      const payloadBytes = Buffer.concat(chunks);
+
+      // Parse the .vdxpkg-style payload bytes (ZIP) through the engine
+      const parseRes = await parseVdxpkg(payloadBytes, await getDevPubKey());
       if (!parseRes.ok) return { ok: false, error: parseRes.error };
+
+      evictOldestSideloadSession();
       const sessionId = randomUUID();
       sideloadSessions.set(sessionId, {
         manifest: parseRes.value.manifest,
@@ -334,6 +642,7 @@ async function main(): Promise<void> {
         signatureValid: parseRes.value.signatureValid,
         kind: parsed.data.kind,
       });
+
       const sysVars = platform.systemVars();
       const defaultInstallPath = `${sysVars.LocalAppData}/Programs/Samsung/${parseRes.value.manifest.id}`;
       return {
@@ -369,6 +678,150 @@ async function main(): Promise<void> {
       await installedStore.update((s) => {
         delete s.apps[parsed.data.appId];
       });
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // settings:get / settings:set
+  // -----------------------------------------------------------------------
+
+  ipcMain.handle(IpcChannels.settingsGet, async (_e, raw): Promise<SettingsGetResT> => {
+    const parsed = SettingsGetReq.safeParse(raw ?? {});
+    if (!parsed.success) return { ok: false, error: 'invalid request' };
+    try {
+      const state = await installedStore.read();
+      return { ok: true, settings: state.settings };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+  });
+
+  ipcMain.handle(IpcChannels.settingsSet, async (_e, raw): Promise<SettingsSetResT> => {
+    const parsed = SettingsSetReq.safeParse(raw);
+    if (!parsed.success) return { ok: false, error: 'invalid request' };
+    try {
+      const updated = await installedStore.update((s) => {
+        Object.assign(s.settings, parsed.data.patch);
+      });
+      return { ok: true, settings: updated.settings };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // diag:export — bundle logs to a ZIP archive using yazl
+  // -----------------------------------------------------------------------
+
+  ipcMain.handle(IpcChannels.diagExport, async (_e, raw): Promise<DiagExportResT> => {
+    const parsed = DiagExportReq.safeParse(raw ?? {});
+    if (!parsed.success) return { ok: false, error: 'invalid request' };
+    try {
+      const archivePath = join(paths.cacheDir, `vdx-diag-${Date.now()}.zip`);
+      await new Promise<void>((resolve, reject) => {
+        const zipFile = new yazl.ZipFile();
+        const outStream = createWriteStream(archivePath);
+        zipFile.outputStream.pipe(outStream);
+        outStream.on('close', resolve);
+        outStream.on('error', reject);
+        zipFile.outputStream.on('error', reject);
+
+        void (async () => {
+          try {
+            const logFiles = await readdir(paths.logsDir);
+            for (const name of logFiles) {
+              if (!name.endsWith('.log') && !name.endsWith('.ndjson')) continue;
+              zipFile.addFile(join(paths.logsDir, name), `logs/${name}`);
+            }
+          } catch {
+            // logsDir may not yet have files — not fatal
+          }
+          zipFile.end();
+        })();
+      });
+      return { ok: true, archivePath };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // diag:open-logs — open the logs directory in the OS file manager
+  // -----------------------------------------------------------------------
+
+  ipcMain.handle(IpcChannels.diagOpenLogs, async (_e, raw): Promise<DiagOpenLogsResT> => {
+    const parsed = DiagOpenLogsReq.safeParse(raw);
+    if (!parsed.success) return { ok: false, error: 'invalid request' };
+    try {
+      await shell.openPath(paths.logsDir);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // update:check — query PackageSource for a newer host version
+  // -----------------------------------------------------------------------
+
+  ipcMain.handle(IpcChannels.updateCheck, async (_e, raw): Promise<UpdateCheckResT> => {
+    const parsed = UpdateCheckReq.safeParse(raw ?? {});
+    if (!parsed.success) return { ok: false, error: 'invalid request' };
+    try {
+      const selfUpdateConfig =
+        config.source.type === 'github' && config.source.github
+          ? { repo: config.source.github.selfUpdateRepo }
+          : null;
+      const info = await checkForHostUpdate({
+        source: packageSource,
+        selfUpdateConfig,
+        currentVersion: HOST_VERSION,
+        channel: config.channel,
+      });
+      return { ok: true, info };
+    } catch (e) {
+      return { ok: false, error: (e as Error).message };
+    }
+  });
+
+  // -----------------------------------------------------------------------
+  // update:run — download the update and log a TODO for Phase 1.2 restart
+  // -----------------------------------------------------------------------
+
+  ipcMain.handle(IpcChannels.updateRun, async (_e, raw): Promise<UpdateRunResT> => {
+    const parsed = UpdateRunReq.safeParse(raw);
+    if (!parsed.success) return { ok: false, error: 'invalid request' };
+    try {
+      const selfUpdateConfig =
+        config.source.type === 'github' && config.source.github
+          ? { repo: config.source.github.selfUpdateRepo }
+          : null;
+      const info = await checkForHostUpdate({
+        source: packageSource,
+        selfUpdateConfig,
+        currentVersion: HOST_VERSION,
+        channel: config.channel,
+      });
+      if (!info) return { ok: false, error: 'No update available' };
+
+      const destPath = join(paths.cacheDir, `vdx-installer-${info.latestVersion}.staged`);
+      await downloadHostUpdate(info, {
+        source: packageSource,
+        destPath,
+        // Phase 1.1: SHA-256 comes from the manifest fetched by checkForHostUpdate.
+        // For Phase 1.2 this must be verified against a trusted manifest signature.
+        // TODO (Phase 1.2): read expectedSha256 from the verified manifest.
+        expectedSha256: '',
+      });
+
+      // TODO (Phase 1.2): Authenticode verification + replace-on-restart:
+      //   app.relaunch({ execPath: destPath });
+      //   app.quit();
+      console.info('[vdx] update:run: Phase 1.1 — download complete. Phase 1.2 replace-on-restart not yet implemented.');
+
       return { ok: true };
     } catch (e) {
       return { ok: false, error: (e as Error).message };

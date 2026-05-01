@@ -5,9 +5,39 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:" />
     <meta name="viewport" content="width=device-width,initial-scale=1.0" />
     <title>VDX Installer</title>
+    <style>
+      /* Inline because the renderer's main bundle hasn't parsed yet at this point.
+         Goal: paint *something themed* on the very first frame so Electron's
+         ready-to-show fires against a recognizable canvas, not a flash of white. */
+      html, body, #root { height: 100%; margin: 0; }
+      body { background: #FBFBFA; color: #15171C;
+             font: 14px/1.4 -apple-system, BlinkMacSystemFont, 'Inter Tight', sans-serif;
+             -webkit-font-smoothing: antialiased; }
+      #__vdx_skeleton { display: flex; height: 100%; }
+      #__vdx_skeleton aside { width: 224px; background: #F4F4F2; border-right: 1px solid rgba(0,0,0,0.05);
+                              padding: 20px; box-sizing: border-box; }
+      #__vdx_skeleton .logo { width: 32px; height: 32px; border-radius: 8px;
+                              background: rgba(15,148,136,0.10); border: 1px solid rgba(15,148,136,0.30);
+                              display: flex; align-items: center; justify-content: center;
+                              font: 600 16px/1 'JetBrains Mono', monospace; color: #0F9488; margin-bottom: 24px; }
+      #__vdx_skeleton main { flex: 1; padding: 32px; }
+      #__vdx_skeleton .row { height: 14px; background: rgba(0,0,0,0.04); border-radius: 4px;
+                             margin-bottom: 12px; }
+      #__vdx_skeleton .row.short { width: 30%; }
+      #__vdx_skeleton .row.tall { height: 56px; }
+    </style>
   </head>
   <body class="bg-canvas text-ink">
-    <div id="root"></div>
+    <div id="root">
+      <div id="__vdx_skeleton">
+        <aside><div class="logo">V</div></aside>
+        <main>
+          <div class="row short"></div>
+          <div class="row tall"></div>
+          <div class="row tall"></div>
+        </main>
+      </div>
+    </div>
     <script type="module" src="./main.tsx"></script>
   </body>
 </html>

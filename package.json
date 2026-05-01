@@ -18,6 +18,8 @@
     "test:coverage": "vitest run --coverage",
     "gen:dev-keys": "tsx scripts/generate-dev-keys.ts",
     "gen:fixture": "tsx scripts/make-fixture-vdxpkg.ts",
+    "gen:agent-catalog": "tsx scripts/make-sample-agent-catalog.ts",
+    "vdx-pack": "tsx src/vdx-pack/cli.ts",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "start": "electron-vite preview"

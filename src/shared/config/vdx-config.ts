@@ -122,9 +122,22 @@ const ProxyConfig = z.discriminatedUnion('kind', [
 // Top-level schema
 // ---------------------------------------------------------------------------
 
+/**
+ * Agent catalog — distinct from the primary `source` block because agents are
+ * usually published as a static catalog.json on GitHub Pages (no Releases API
+ * involvement, no cross-repo crawl). Keeping it as plain URLs avoids forcing
+ * GitHub Pages operators to host a full PackageSource layout. URLs only —
+ * trust still flows through the same trustRoots.
+ */
+const AgentCatalogConfig = z.object({
+  url: z.string().url(),
+  sigUrl: z.string().url(),
+});
+
 export const VdxConfigSchema = z.object({
   schemaVersion: z.literal(1),
   source: SourceConfig,
+  agentCatalog: AgentCatalogConfig.optional(),
   trustRoots: z.array(Base64PubKey).max(16).optional(),
   channel: z.enum(['stable', 'beta', 'internal']).default('stable'),
   proxy: ProxyConfig.optional(),
