@@ -1,3 +1,5 @@
+import { redact } from './redact';
+
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
 
 export interface LogEntry {
@@ -37,11 +39,31 @@ function makeLogger(
   return self;
 }
 
+/**
+ * Walk a fields object and redact every string value. We only scrub strings
+ * — numbers/booleans/null can't carry secrets in the redactor's lexicon.
+ * Nested objects/arrays are recursed so a `{ headers: { authorization: 'Bearer …' } }`
+ * payload doesn't slip past.
+ */
+function redactFields(value: unknown): unknown {
+  if (typeof value === 'string') return redact(value);
+  if (Array.isArray(value)) return value.map(redactFields);
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = redactFields(v);
+    }
+    return out;
+  }
+  return value;
+}
+
 export function createConsoleLogger(minLevel: LogLevel = 'info'): Logger {
   const minIdx = LEVEL_ORDER.indexOf(minLevel);
   const emit = (level: LogLevel, msg: string, fields?: Record<string, unknown>) => {
     if (LEVEL_ORDER.indexOf(level) < minIdx) return;
-    const line = JSON.stringify({ ts: new Date().toISOString(), level, msg, ...fields });
+    const safe = redactFields({ ts: new Date().toISOString(), level, msg: redact(msg), ...(fields ?? {}) });
+    const line = JSON.stringify(safe);
     // eslint-disable-next-line no-console
     console.log(line);
   };

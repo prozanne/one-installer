@@ -1,11 +1,9 @@
 import { app, BrowserWindow, ipcMain, dialog, shell, safeStorage } from 'electron';
 import { join } from 'node:path';
-import { mkdirSync, createWriteStream, writeFileSync, existsSync, unlinkSync } from 'node:fs';
-import { readdir } from 'node:fs/promises';
+import { mkdirSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import * as nodeFs from 'node:fs';
-import * as yazl from 'yazl';
 
 import { resolveHostPaths, ensureDevKeyPair, HOST_VERSION } from './host';
 import { MockPlatform } from './platform';
@@ -30,6 +28,7 @@ import {
 import { handleSettingsGet, handleSettingsSet } from './ipc/handlers/settings';
 import { handleUpdateCheck, handleUpdateRun } from './ipc/handlers/update';
 import { handleDiagExport, handleDiagOpenLogs } from './ipc/handlers/diag';
+import { handleAuthSetToken, handleAuthClearToken } from './ipc/handlers/auth';
 import {
   IpcChannels,
   SideloadOpenReq,
@@ -37,8 +36,6 @@ import {
   UninstallRunReq,
   CatalogFetchReq,
   CatalogInstallReq,
-  AuthSetTokenReq,
-  AuthClearTokenReq,
   type SideloadOpenResT,
   type InstallRunResT,
   type UninstallRunResT,
@@ -47,8 +44,6 @@ import {
   type CatalogFetchResT,
   type CatalogInstallResT,
   type CatalogKindT,
-  type AuthSetTokenResT,
-  type AuthClearTokenResT,
 } from '@shared/ipc-types';
 import type { CatalogT, Manifest } from '@shared/schema';
 import type { PackageSource } from '@shared/source/package-source';
@@ -867,33 +862,13 @@ async function main(): Promise<void> {
   // plaintext storage. Failing closed is the safer default for a credential.
   // -----------------------------------------------------------------------
 
-  ipcMain.handle(IpcChannels.authSetToken, async (_e, raw): Promise<AuthSetTokenResT> => {
-    const parsed = AuthSetTokenReq.safeParse(raw);
-    if (!parsed.success) return { ok: false, error: 'invalid request' };
-    if (!safeStorage.isEncryptionAvailable()) {
-      return { ok: false, error: 'OS secure storage unavailable on this system' };
-    }
-    try {
-      const encrypted = safeStorage.encryptString(parsed.data.token);
-      // mode 0o600 best-effort — POSIX only; Windows ACLs already restrict the
-      // userData dir to the current user account.
-      writeFileSync(paths.authStore, encrypted, { mode: 0o600 });
-      return { ok: true };
-    } catch (e) {
-      return { ok: false, error: (e as Error).message };
-    }
-  });
-
-  ipcMain.handle(IpcChannels.authClearToken, async (_e, raw): Promise<AuthClearTokenResT> => {
-    const parsed = AuthClearTokenReq.safeParse(raw ?? {});
-    if (!parsed.success) return { ok: false, error: 'invalid request' };
-    try {
-      if (existsSync(paths.authStore)) unlinkSync(paths.authStore);
-      return { ok: true };
-    } catch (e) {
-      return { ok: false, error: (e as Error).message };
-    }
-  });
+  const authDeps = {
+    authStorePath: paths.authStore,
+    safeStorage,
+    fs: { writeFileSync, existsSync, unlinkSync },
+  };
+  ipcMain.handle(IpcChannels.authSetToken, (_e, raw) => handleAuthSetToken(authDeps, raw));
+  ipcMain.handle(IpcChannels.authClearToken, (_e, raw) => handleAuthClearToken(authDeps, raw));
 
   app.on('second-instance', () => {
     if (mainWindow) {
